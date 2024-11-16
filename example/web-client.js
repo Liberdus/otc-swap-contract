@@ -14,7 +14,7 @@ class OTCClient {
   // Create a new order
   async createOrder(params) {
     const {
-      partner = ethers.ZeroAddress, // For public orders
+      taker = ethers.ZeroAddress, // For public orders
       sellToken,
       sellAmount,
       buyToken,
@@ -37,7 +37,7 @@ class OTCClient {
 
       // Create the order
       const tx = await this.contract.createOrder(
-        partner,
+        taker,
         sellToken,
         sellAmount,
         buyToken,
@@ -143,7 +143,7 @@ class OTCClient {
     try {
       const [
         makers,
-        partners,
+        takers,
         sellTokens,
         sellAmounts,
         buyTokens,
@@ -158,7 +158,7 @@ class OTCClient {
       const orders = orderIds.map((id, index) => ({
         orderId: Number(id),
         maker: makers[index],
-        partner: partners[index],
+        taker: takers[index],
         sell: {
           token: sellTokens[index],
           amount: sellAmounts[index]

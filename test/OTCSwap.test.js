@@ -204,7 +204,7 @@ describe('OTCSwap', function () {
     it('should return correct order IDs with active orders', async function () {
       const [
         makers,
-        partners,
+        takers,
         sellTokens,
         sellAmounts,
         buyTokens,

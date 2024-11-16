@@ -13,7 +13,7 @@ contract OTCSwap is ReentrancyGuard {
 
     struct Order {
         address maker;
-        address partner;
+        address taker;
         address sellToken;
         uint256 sellAmount;
         address buyToken;
@@ -32,7 +32,7 @@ contract OTCSwap is ReentrancyGuard {
     event OrderCreated(
         uint256 indexed orderId,
         address indexed maker,
-        address indexed partner,
+        address indexed taker,
         address sellToken,
         uint256 sellAmount,
         address buyToken,
@@ -58,7 +58,7 @@ contract OTCSwap is ReentrancyGuard {
     );
 
     function createOrder(
-        address partner,
+        address taker,
         address sellToken,
         uint256 sellAmount,
         address buyToken,
@@ -71,8 +71,7 @@ contract OTCSwap is ReentrancyGuard {
         require(buyAmount > 0, "Invalid buy amount");
 
         require(
-            IERC20(sellToken).allowance(msg.sender, address(this)) >=
-            sellAmount,
+            IERC20(sellToken).allowance(msg.sender, address(this)) >= sellAmount,
             "Insufficient allowance"
         );
 
@@ -81,16 +80,12 @@ contract OTCSwap is ReentrancyGuard {
             "Insufficient balance"
         );
 
-        IERC20(sellToken).safeTransferFrom(
-            msg.sender,
-            address(this),
-            sellAmount
-        );
+        IERC20(sellToken).safeTransferFrom(msg.sender, address(this), sellAmount);
 
         uint256 orderId = nextOrderId++;
         orders[orderId] = Order({
             maker: msg.sender,
-            partner: partner,
+            taker: taker,
             sellToken: sellToken,
             sellAmount: sellAmount,
             buyToken: buyToken,
@@ -106,7 +101,7 @@ contract OTCSwap is ReentrancyGuard {
         emit OrderCreated(
             orderId,
             msg.sender,
-            partner,
+            taker,
             sellToken,
             sellAmount,
             buyToken,
@@ -121,23 +116,22 @@ contract OTCSwap is ReentrancyGuard {
         Order storage order = orders[orderId];
         require(order.active, "Order not active");
         require(
-            order.partner == address(0) || order.partner == msg.sender,
-            "Not authorized partner"
+            order.taker == address(0) || order.taker == msg.sender,
+            "Not authorized taker"
         );
         require(
             block.timestamp <= order.createdAt + ORDER_EXPIRY,
             "Order expired"
         );
 
-        // Mark order as inactive but preserve the data
+        // Mark order as inactive
         order.active = false;
 
-        // replace the order with the last order in activeOrderIds
+        // Remove from active orders
         uint256 lastOrderId = activeOrderIds[activeOrderIds.length - 1];
         uint256 orderIndex = orderIdToIndex[orderId];
         activeOrderIds[orderIndex] = lastOrderId;
         orderIdToIndex[lastOrderId] = orderIndex;
-        // delete the last order as it is now a duplicate
         activeOrderIds.pop();
         delete orderIdToIndex[orderId];
 
@@ -164,19 +158,23 @@ contract OTCSwap is ReentrancyGuard {
     }
 
     function cancelOrder(uint256 orderId) external nonReentrant {
-        Order memory order = orders[orderId];
+        Order storage order = orders[orderId];
         require(order.active, "Order not active");
         require(order.maker == msg.sender, "Not order maker");
 
-        // Store values needed for transfer and event
-        address sellToken = order.sellToken;
-        uint256 sellAmount = order.sellAmount;
+        // Mark order as inactive
+        order.active = false;
 
-        // Delete cancelled order for gas refund
-        delete orders[orderId];
+        // Remove from active orders
+        uint256 lastOrderId = activeOrderIds[activeOrderIds.length - 1];
+        uint256 orderIndex = orderIdToIndex[orderId];
+        activeOrderIds[orderIndex] = lastOrderId;
+        orderIdToIndex[lastOrderId] = orderIndex;
+        activeOrderIds.pop();
+        delete orderIdToIndex[orderId];
 
         // Return sell tokens to maker
-        IERC20(sellToken).safeTransfer(msg.sender, sellAmount);
+        IERC20(order.sellToken).safeTransfer(msg.sender, order.sellAmount);
 
         emit OrderCancelled(orderId, msg.sender, block.timestamp);
     }
@@ -189,7 +187,7 @@ contract OTCSwap is ReentrancyGuard {
     view
     returns (
         address[] memory makers,
-        address[] memory partners,
+        address[] memory takers,
         address[] memory sellTokens,
         uint256[] memory sellAmounts,
         address[] memory buyTokens,
@@ -217,7 +215,7 @@ contract OTCSwap is ReentrancyGuard {
             // If offset is provided but not found, return empty arrays
             if (!validOffset) {
                 makers = new address[](0);
-                partners = new address[](0);
+                takers = new address[](0);
                 sellTokens = new address[](0);
                 sellAmounts = new uint256[](0);
                 buyTokens = new address[](0);
@@ -228,7 +226,7 @@ contract OTCSwap is ReentrancyGuard {
                 nextOffset = 0;
                 return (
                     makers,
-                    partners,
+                    takers,
                     sellTokens,
                     sellAmounts,
                     buyTokens,
@@ -256,7 +254,7 @@ contract OTCSwap is ReentrancyGuard {
 
         // Initialize arrays with the valid count
         makers = new address[](validCount);
-        partners = new address[](validCount);
+        takers = new address[](validCount);
         sellTokens = new address[](validCount);
         sellAmounts = new uint256[](validCount);
         buyTokens = new address[](validCount);
@@ -277,7 +275,7 @@ contract OTCSwap is ReentrancyGuard {
 
             if (block.timestamp <= order.createdAt + ORDER_EXPIRY) {
                 makers[index] = order.maker;
-                partners[index] = order.partner;
+                takers[index] = order.taker;
                 sellTokens[index] = order.sellToken;
                 sellAmounts[index] = order.sellAmount;
                 buyTokens[index] = order.buyToken;
@@ -298,7 +296,7 @@ contract OTCSwap is ReentrancyGuard {
 
         return (
             makers,
-            partners,
+            takers,
             sellTokens,
             sellAmounts,
             buyTokens,
