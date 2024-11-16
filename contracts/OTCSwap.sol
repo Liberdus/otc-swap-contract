@@ -71,7 +71,8 @@ contract OTCSwap is ReentrancyGuard {
         require(buyAmount > 0, "Invalid buy amount");
 
         require(
-            IERC20(sellToken).allowance(msg.sender, address(this)) >= sellAmount,
+            IERC20(sellToken).allowance(msg.sender, address(this)) >=
+            sellAmount,
             "Insufficient allowance"
         );
 
@@ -80,7 +81,11 @@ contract OTCSwap is ReentrancyGuard {
             "Insufficient balance"
         );
 
-        IERC20(sellToken).safeTransferFrom(msg.sender, address(this), sellAmount);
+        IERC20(sellToken).safeTransferFrom(
+            msg.sender,
+            address(this),
+            sellAmount
+        );
 
         uint256 orderId = nextOrderId++;
         orders[orderId] = Order({
@@ -176,7 +181,10 @@ contract OTCSwap is ReentrancyGuard {
         emit OrderCancelled(orderId, msg.sender, block.timestamp);
     }
 
-    function getActiveOrders(uint256 offset, uint256 limit)
+    function getActiveOrders(
+        uint256 offset,
+        uint256 limit
+    )
     external
     view
     returns (
@@ -188,32 +196,65 @@ contract OTCSwap is ReentrancyGuard {
         uint256[] memory buyAmounts,
         uint256[] memory createdAts,
         bool[] memory actives,
+        uint256[] memory orderIds,
         uint256 nextOffset
     )
     {
         // Cap the limit to MAX_PAGE_SIZE
         uint256 actualLimit = limit > MAX_PAGE_SIZE ? MAX_PAGE_SIZE : limit;
 
-        // If offset is 0, start from the latest order
-        // Otherwise start from the provided offset
-        uint256 current = offset == 0 ? nextOrderId - 1 : offset - 1;
-
-        // First pass: Count valid orders
-        uint256 validCount = 0;
-        uint256 cursor = current;
-
-        while (validCount < actualLimit && cursor >= 0) {
-            Order storage order = orders[cursor];
-            if (order.maker != address(0) &&
-            order.active &&
-                block.timestamp <= order.createdAt + ORDER_EXPIRY) {
-                validCount++;
+        // Find starting index based on offset
+        uint256 startIndex = 0;
+        bool validOffset = false;
+        if (offset > 0) {
+            for (uint256 i = 0; i < activeOrderIds.length; i++) {
+                if (activeOrderIds[i] == offset) {
+                    startIndex = i;
+                    validOffset = true;
+                    break;
+                }
             }
-            if (cursor == 0) break;
-            cursor--;
+            // If offset is provided but not found, return empty arrays
+            if (!validOffset) {
+                makers = new address[](0);
+                partners = new address[](0);
+                sellTokens = new address[](0);
+                sellAmounts = new uint256[](0);
+                buyTokens = new address[](0);
+                buyAmounts = new uint256[](0);
+                createdAts = new uint256[](0);
+                actives = new bool[](0);
+                orderIds = new uint256[](0);
+                nextOffset = 0;
+                return (
+                    makers,
+                    partners,
+                    sellTokens,
+                    sellAmounts,
+                    buyTokens,
+                    buyAmounts,
+                    createdAts,
+                    actives,
+                    orderIds,
+                    nextOffset
+                );
+            }
         }
 
-        // Create arrays of exact size needed
+        // Count valid active orders from the starting index
+        uint256 validCount = 0;
+        for (
+            uint256 i = startIndex;
+            i < activeOrderIds.length && validCount < actualLimit;
+            i++
+        ) {
+            Order storage order = orders[activeOrderIds[i]];
+            if (block.timestamp <= order.createdAt + ORDER_EXPIRY) {
+                validCount++;
+            }
+        }
+
+        // Initialize arrays with the valid count
         makers = new address[](validCount);
         partners = new address[](validCount);
         sellTokens = new address[](validCount);
@@ -222,17 +263,19 @@ contract OTCSwap is ReentrancyGuard {
         buyAmounts = new uint256[](validCount);
         createdAts = new uint256[](validCount);
         actives = new bool[](validCount);
+        orderIds = new uint256[](validCount);
 
-        // Second pass: Fill arrays
+        // Fill arrays with active order data
         uint256 index = 0;
-        cursor = current;
+        for (
+            uint256 i = startIndex;
+            i < activeOrderIds.length && index < validCount;
+            i++
+        ) {
+            uint256 orderId = activeOrderIds[i];
+            Order storage order = orders[orderId];
 
-        // Fill arrays by scanning backwards from current
-        while (index < validCount && cursor >= 0) {
-            Order storage order = orders[cursor];
-            if (order.maker != address(0) &&
-            order.active &&
-                block.timestamp <= order.createdAt + ORDER_EXPIRY) {
+            if (block.timestamp <= order.createdAt + ORDER_EXPIRY) {
                 makers[index] = order.maker;
                 partners[index] = order.partner;
                 sellTokens[index] = order.sellToken;
@@ -241,14 +284,17 @@ contract OTCSwap is ReentrancyGuard {
                 buyAmounts[index] = order.buyAmount;
                 createdAts[index] = order.createdAt;
                 actives[index] = true;
+                orderIds[index] = orderId;
                 index++;
             }
-            if (cursor == 0) break;
-            cursor--;
         }
 
-        // Return cursor as nextOffset for the next page
-        nextOffset = cursor;
+        // Set nextOffset to the next orderId, or 0 if we've reached the end
+        if (startIndex + index < activeOrderIds.length) {
+            nextOffset = activeOrderIds[startIndex + index];
+        } else {
+            nextOffset = 0;
+        }
 
         return (
             makers,
@@ -259,6 +305,7 @@ contract OTCSwap is ReentrancyGuard {
             buyAmounts,
             createdAts,
             actives,
+            orderIds,
             nextOffset
         );
     }
