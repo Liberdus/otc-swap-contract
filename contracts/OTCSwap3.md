@@ -5,9 +5,17 @@ This guide explains key aspects of interacting with the OTC Swap contract from a
 
 ## Key Features
 - Direct peer-to-peer token swaps
-- Automatic fee adjustment based on gas usage
+- Automatic adjustment of order creation fee based on gas usage
 - 7-day order expiry with 7-day grace period
 - Permissionless order cleanup with rewards
+- Any user can create an order specifying the sell token the buy token and the amounts; the user creating the order is called the maker
+- The maker can optionally specify the address of the taker; if not provided then anyone can be a taker
+- To preven spam and only allow serious orders there is a nonrefundable order creation fee
+- If an order is not filled within 7 days it is considered expired and can no longer be filled
+- If an order has expired the maker should cancel the order to get the locked token back
+- If the maker does not cancel the order within 7 days of the order expiring the grace period is over and the maker has to wait for the contract to cancel the order
+- Anyone can call the cleanup function on the contract to delete orders that are older than 14 days
+- To incentivize people to call the cleanup function the order creation fees that were collected for the deleted orders are given to the caller
 
 ## Building the Order Book State
 
