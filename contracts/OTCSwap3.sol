@@ -34,6 +34,7 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         uint256 buyAmount;
         uint256 timestamp;
         OrderStatus status;
+        uint256 orderCreationFee;  // Fee paid when order was created
     }
 
     mapping(uint256 => Order) public orders;
@@ -81,10 +82,6 @@ contract OTCSwap is ReentrancyGuard, Ownable {
     modifier validOrder(uint256 orderId) {
         require(orders[orderId].maker != address(0), "Order does not exist");
         require(orders[orderId].status == OrderStatus.Active, "Order is not active");
-        require(
-            block.timestamp <= orders[orderId].timestamp + ORDER_EXPIRY,
-            "Order has expired"
-        );
         _;
     }
 
@@ -129,7 +126,8 @@ contract OTCSwap is ReentrancyGuard, Ownable {
             buyToken: buyToken,
             buyAmount: buyAmount,
             timestamp: block.timestamp,
-            status: OrderStatus.Active
+            status: OrderStatus.Active,
+            orderCreationFee: orderCreationFee
         });
 
         emit OrderCreated(
@@ -153,10 +151,13 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         Order storage order = orders[orderId];
         
         require(
+            block.timestamp <= order.timestamp + ORDER_EXPIRY,
+            "Order has expired"
+        );
+        require(
             order.taker == address(0) || order.taker == msg.sender,
             "Not authorized to fill this order"
         );
-
         require(
             IERC20(order.buyToken).balanceOf(msg.sender) >= order.buyAmount,
             "Insufficient balance for buy token"
@@ -191,13 +192,9 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         );
     }
 
-    function cancelOrder(uint256 orderId) external nonReentrant {
+    function cancelOrder(uint256 orderId) external nonReentrant validOrder(orderId) {
         Order storage order = orders[orderId];
-        require(order.maker != address(0), "Order does not exist");
         require(order.maker == msg.sender, "Only maker can cancel order");
-        require(order.status == OrderStatus.Active, "Order is not active");
-        
-        // Check if within cancellation window (expiry + grace period)
         require(
             block.timestamp <= order.timestamp + ORDER_EXPIRY + GRACE_PERIOD,
             "Grace period has expired"
@@ -232,7 +229,7 @@ contract OTCSwap is ReentrancyGuard, Ownable {
             if (block.timestamp > order.timestamp + ORDER_EXPIRY + GRACE_PERIOD) {
                 // Return tokens and cleanup
                 IERC20(order.sellToken).safeTransfer(order.maker, order.sellAmount);
-                feesToDistribute += orderCreationFee;
+                feesToDistribute += order.orderCreationFee;  // Use stored fee
                 
                 address maker = order.maker;
                 delete orders[newFirstOrderId];
@@ -272,7 +269,7 @@ contract OTCSwap is ReentrancyGuard, Ownable {
             if (order.maker != address(0) &&
                 order.status == OrderStatus.Active &&
                 block.timestamp > order.timestamp + ORDER_EXPIRY + GRACE_PERIOD) {
-                nativeCoinReward += orderCreationFee;
+                nativeCoinReward += order.orderCreationFee;  // Use stored fee
             }
             currentId++;
         }
@@ -281,3 +278,4 @@ contract OTCSwap is ReentrancyGuard, Ownable {
     // Allow contract to receive native coin for creation fees
     receive() external payable {}
 }
+
