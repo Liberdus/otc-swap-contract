@@ -134,9 +134,36 @@ The contract incentivizes cleanup of expired orders through rewards:
    - If attempt to return tokens to maker fails the order is reset as a new order and can be filled again
    - If attempt to return tokens to maker fails MAX_RETRY_ATTEMPTS (10) times the order is deleted and the caller receives the creation fee
 
-3. Check potential reward before cleaning:
+3. Calculate potential cleanup reward:
 ```javascript
-const reward = await contract.getCleanupReward();
+// Function to calculate potential cleanup reward for the next batch
+async function calculateCleanupReward(contract) {
+    const currentTime = Math.floor(Date.now() / 1000);
+    const firstOrderId = await contract.firstOrderId();
+    const nextOrderId = await contract.nextOrderId();
+    let reward = 0;
+    
+    // Look at up to MAX_CLEANUP_BATCH orders
+    const batchEndId = Math.min(firstOrderId + 10, nextOrderId);
+    
+    for (let orderId = firstOrderId; orderId < batchEndId; orderId++) {
+        const order = await contract.orders(orderId);
+        
+        // Skip empty orders
+        if (order.maker === '0x0000000000000000000000000000000000000000') {
+            continue;
+        }
+        
+        // Check if grace period has passed
+        if (currentTime > order.timestamp.toNumber() + (14 * 24 * 60 * 60)) {
+            reward += order.orderCreationFee.toBigInt();
+        } else {
+            break; // Stop at first non-cleanable order
+        }
+    }
+    
+    return reward;
+}
 ```
 
 ## Key Contract Parameters
@@ -153,7 +180,6 @@ Constants:
 ```javascript
 const ORDER_EXPIRY = 7 * 24 * 60 * 60;    // 7 days in seconds
 const GRACE_PERIOD = 7 * 24 * 60 * 60;    // 7 days in seconds
-const GAS_BUFFER = 50000;                 // Gas to keep for cleanup completion
 const MAX_CLEANUP_BATCH = 10;             // Max orders per cleanup
 const FEE_DAMPENING_FACTOR = 9;           // Used in fee calculation
 const MIN_FEE_PERCENTAGE = 90;            // 90% of expected fee
