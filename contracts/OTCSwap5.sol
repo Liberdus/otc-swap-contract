@@ -337,27 +337,6 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         }
     }
 
-    function getCleanupReward() 
-        external 
-        view 
-        returns (uint256 nativeCoinReward) 
-    {
-        uint256 currentId = firstOrderId;
-        uint256 endId = currentId + MAX_CLEANUP_BATCH;
-        if (endId > nextOrderId) {
-            endId = nextOrderId;
-        }
-
-        while (currentId < endId) {
-            Order storage order = orders[currentId];
-            if (order.maker != address(0) &&
-                block.timestamp > order.timestamp + ORDER_EXPIRY + GRACE_PERIOD) {
-                nativeCoinReward += order.orderCreationFee;  // Use stored fee
-            }
-            currentId++;
-        }
-    }
-
     // Allow contract to receive native coin for creation fees
     receive() external payable {}
 }
