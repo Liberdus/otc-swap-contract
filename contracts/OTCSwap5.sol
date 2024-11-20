@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -246,7 +246,6 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         emit CleanupError(orderId, reason, block.timestamp);
         // If max retries reached, delete order and distribute fee
         if (order.tries >= MAX_RETRY_ATTEMPTS) {
-            address maker = order.maker;
             delete orders[orderId];
             emit CleanupError(orderId, "Max retries reached", block.timestamp);
             return order.orderCreationFee;
@@ -280,7 +279,6 @@ contract OTCSwap is ReentrancyGuard, Ownable {
     }
 
     function cleanupExpiredOrders() external nonReentrant {
-        uint256 gasStart = gasleft();
         uint256 feesToDistribute = 0;
         uint256 newFirstOrderId = firstOrderId;
 
