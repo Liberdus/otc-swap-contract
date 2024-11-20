@@ -4,9 +4,8 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract OTCSwap is ReentrancyGuard, Ownable {
+contract OTCSwap is ReentrancyGuard {
     using SafeERC20 for IERC20;
     
     uint256 public constant ORDER_EXPIRY = 7 days;
@@ -299,7 +298,7 @@ contract OTCSwap is ReentrancyGuard, Ownable {
             if (block.timestamp > order.timestamp + ORDER_EXPIRY + GRACE_PERIOD) {
                 // Only attempt token transfer for Active orders or orders with previous failed transfers
                 if (order.status == OrderStatus.Active || order.tries > 0) {
-                    try IERC20(order.sellToken).safeTransfer(order.maker, order.sellAmount) {
+                    try this.attemptTransfer(IERC20(order.sellToken), order.maker, order.sellAmount) {
                         feesToDistribute += order.orderCreationFee;
                         address maker = order.maker;
                         delete orders[newFirstOrderId];
@@ -337,4 +336,9 @@ contract OTCSwap is ReentrancyGuard, Ownable {
 
     // Allow contract to receive native coin for creation fees
     receive() external payable {}
+
+    function attemptTransfer(IERC20 token, address to, uint256 amount) external {
+        require(msg.sender == address(this), "Only self");  // Optional but recommended security check
+        token.safeTransfer(to, amount);
+    }
 }
