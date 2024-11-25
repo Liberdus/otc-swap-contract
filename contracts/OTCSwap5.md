@@ -111,7 +111,7 @@ Important notes about the fee:
 - Fee adjusts automatically after each order creation using a dampening formula
 - Fee must be within 90-150% of the expected fee amount
 - First ever order can be created with zero fee
-- Fee is calculated using the formula: fee = 100 * (9 * currentFee + gasUsed) / 10
+- Fee is calculated using the formulas: averageGasUsed = (9 * averageGasUsed + gasUsed) / 10; fee = 100 * averageGasUsed;
 - Fee must be sent with the transaction in the native coin
 - Fee is the same regardless of gas price used
 
