@@ -17,6 +17,7 @@ contract OTCSwap is ReentrancyGuard {
     uint256 public constant MAX_RETRY_ATTEMPTS = 10;   // Maximum number of retry attempts
 
     uint256 public orderCreationFee;
+    uint256 public avgerageGasUsed;
     uint256 public accumulatedFees;
     uint256 public firstOrderId;  // First potentially active order
     uint256 public nextOrderId;   // Next order ID to be assigned
@@ -170,7 +171,8 @@ contract OTCSwap is ReentrancyGuard {
 
         // Update fee using dampening formula: fee = 100 * (9 * currentFee + gasUsed) / 10
         uint256 gasUsed = startGas - gasleft();
-        orderCreationFee = (100 * (FEE_DAMPENING_FACTOR * orderCreationFee + gasUsed)) / (FEE_DAMPENING_FACTOR + 1);
+        averageGasUsed = (FEE_DAMPENING_FACTOR * averageGasUsed + gasUsed) / (FEE_DAMPENING_FACTOR + 1);
+        orderCreationFee = 100 * averageGasUsed;
 
         return orderId;
     }
