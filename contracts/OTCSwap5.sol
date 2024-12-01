@@ -17,7 +17,7 @@ contract OTCSwap is ReentrancyGuard {
     uint256 public constant MAX_RETRY_ATTEMPTS = 10;   // Maximum number of retry attempts
 
     uint256 public orderCreationFee;
-    uint256 public avgerageGasUsed;
+    uint256 public averageGasUsed;
     uint256 public accumulatedFees;
     uint256 public firstOrderId;  // First potentially active order
     uint256 public nextOrderId;   // Next order ID to be assigned
