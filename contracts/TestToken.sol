@@ -5,6 +5,14 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract TestToken is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {
-        _mint(msg.sender, 1000000 * 10 ** decimals());
+        _mint(msg.sender, 1000000 * 10**decimals());
+    }
+
+    function _update(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual override {
+        super._update(from, to, amount);
     }
 }

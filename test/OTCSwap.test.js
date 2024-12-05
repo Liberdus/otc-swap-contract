@@ -14,7 +14,12 @@ describe('OTCSwap', function () {
   const INITIAL_SUPPLY = ethers.parseEther('1000000')
   const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
   const ORDER_EXPIRY = 7 * 24 * 60 * 60 // 7 days in seconds
-  const MAX_PAGE_SIZE = 100
+  const GRACE_PERIOD = 7 * 24 * 60 * 60 // 7 days in seconds
+
+  // Fixed test values
+  const sellAmount = ethers.parseEther('100')
+  const buyAmount = ethers.parseEther('200')
+  const FIRST_ORDER_FEE = ethers.parseEther('0.01') // Any value works for first order
 
   beforeEach(async function () {
     [owner, alice, bob, charlie] = await ethers.getSigners()
@@ -29,7 +34,7 @@ describe('OTCSwap', function () {
     otcSwap = await OTCSwap.deploy()
     await otcSwap.waitForDeployment()
 
-    // Distribute tokens - now including Charlie
+    // Distribute tokens
     await tokenA.transfer(alice.address, INITIAL_SUPPLY / BigInt(4))
     await tokenA.transfer(bob.address, INITIAL_SUPPLY / BigInt(4))
     await tokenA.transfer(charlie.address, INITIAL_SUPPLY / BigInt(4))
@@ -38,67 +43,116 @@ describe('OTCSwap', function () {
     await tokenB.transfer(charlie.address, INITIAL_SUPPLY / BigInt(4))
   });
 
-  describe('Order Creation', function () {
-    const sellAmount = ethers.parseEther('100')
-    const buyAmount = ethers.parseEther('200')
+  describe('Contract Administration', function () {
+    it('should allow owner to disable contract', async function () {
+      const latestTime = await time.latest()
+      const tx = await otcSwap.connect(owner).disableContract()
+      await expect(tx)
+        .to.emit(otcSwap, 'ContractDisabled')
+        .withArgs(owner.address, latestTime + 1)
+      expect(await otcSwap.isDisabled()).to.be.true
+    })
 
-    it('should create a public order and track it in active orders', async function () {
+    it('should prevent non-owner from disabling contract', async function () {
+      await expect(otcSwap.connect(alice).disableContract())
+        .to.be.revertedWithCustomError(otcSwap, 'OwnableUnauthorizedAccount')
+        .withArgs(alice.address)
+    })
+
+    it('should prevent creating orders when contract is disabled', async function () {
+      await otcSwap.connect(owner).disableContract()
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount)
+      await expect(otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: FIRST_ORDER_FEE }
+      )).to.be.revertedWith('Contract is disabled')
+    })
+  });
 
-      const tx = await otcSwap
-        .connect(alice)
-        .createOrder(
-          ZERO_ADDRESS,
-          tokenA.target,
-          sellAmount,
-          tokenB.target,
-          buyAmount
-        )
-      const receipt = await tx.wait()
+  describe('Order Creation with Fees', function () {
+    beforeEach(async function () {
+      // Approve enough tokens for multiple orders
+      await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(5))
+    })
 
-      // Check OrderCreated event using event filters
-      const orderCreatedFilter = otcSwap.filters.OrderCreated()
-      const events = await otcSwap.queryFilter(
-        orderCreatedFilter,
-        receipt.blockNumber
+    it('should accept any fee for first order', async function () {
+      await expect(otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: FIRST_ORDER_FEE }
+      )).to.not.be.reverted
+    })
+
+    it('should enforce fee limits for subsequent orders', async function () {
+      // Create first order to establish fee baseline
+      await otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: FIRST_ORDER_FEE }
       )
-      expect(events.length).to.equal(1)
-      expect(events[0].eventName).to.equal('OrderCreated')
 
-      // Check active orders through getActiveOrders
-      const [makers, , sellTokens, sellAmounts, , , , actives] =
-        await otcSwap.getActiveOrders(0, 1)
-      expect(makers[0]).to.equal(alice.address)
-      expect(sellTokens[0]).to.equal(tokenA.target)
-      expect(sellAmounts[0]).to.equal(sellAmount)
-      expect(actives[0]).to.be.true
+      const currentFee = await otcSwap.orderCreationFee()
+
+      // Ensure currentFee is not 0
+      expect(currentFee).to.be.gt(0, 'Fee should be greater than 0 after first order')
+
+      const minFee = (currentFee * BigInt(90)) / BigInt(100) // 90%
+      const maxFee = (currentFee * BigInt(150)) / BigInt(100) // 150%
+
+      // Test fee too low
+      await expect(otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: minFee - BigInt(1) }
+      )).to.be.revertedWith('Fee too low')
+
+      // Test fee too high
+      await expect(otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: maxFee + BigInt(1) }
+      )).to.be.revertedWith('Fee too high')
+
+      // Test acceptable fee
+      await expect(otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: currentFee }
+      )).to.not.be.reverted
     });
 
-    it('should emit OrderCreated event with correct timestamp', async function () {
-      await tokenA.connect(alice).approve(otcSwap.target, sellAmount)
+    it('should accumulate fees correctly', async function () {
+      const initialAccumulatedFees = await otcSwap.accumulatedFees()
 
-      const tx = await otcSwap
-        .connect(alice)
-        .createOrder(
-          ZERO_ADDRESS,
-          tokenA.target,
-          sellAmount,
-          tokenB.target,
-          buyAmount
-        )
-      const receipt = await tx.wait()
-
-      const orderCreatedFilter = otcSwap.filters.OrderCreated()
-      const events = await otcSwap.queryFilter(
-        orderCreatedFilter,
-        receipt.blockNumber
+      await otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: FIRST_ORDER_FEE }
       )
-      const currentTime = await time.latest()
 
-      expect(events[0].args.createdAt).to.be.closeTo(
-        BigInt(currentTime),
-        BigInt(2)
-      )
+      expect(await otcSwap.accumulatedFees()).to.equal(initialAccumulatedFees + FIRST_ORDER_FEE)
     });
   });
 
@@ -108,413 +162,436 @@ describe('OTCSwap', function () {
     let orderId
 
     beforeEach(async function () {
+      // Approve tokens for alice (maker)
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount)
-      const tx = await otcSwap
-        .connect(alice)
-        .createOrder(
-          ZERO_ADDRESS,
-          tokenA.target,
-          sellAmount,
-          tokenB.target,
-          buyAmount
-        )
+      // Transfer and approve tokens for bob (taker)
+      await tokenB.connect(bob).approve(otcSwap.target, buyAmount)
+
+      // Create an order as alice
+      await otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS, // public order
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: FIRST_ORDER_FEE }
+      )
       orderId = 0
     });
 
-    it('should remove filled order from active orders', async function () {
+    it('should successfully fill a valid order', async function () {
+      // Check initial balances
+      const aliceInitialTokenB = await tokenB.balanceOf(alice.address)
+      const bobInitialTokenA = await tokenA.balanceOf(bob.address)
+
+      // Pre-approve tokens and transfer buyTokens from bob to contract
+      // await tokenB.connect(bob).transfer(otcSwap.target, buyAmount)
+
+      // approve tokens for bob
       await tokenB.connect(bob).approve(otcSwap.target, buyAmount)
+
+      // log order amounts
+      const order = await otcSwap.orders(orderId)
+
+      // check balance of sell token in contract
+      const balanceBefore = await tokenA.balanceOf(otcSwap.target)
+
+      // check the balance of buy token in contract
+      const balanceBeforeBuy = await tokenB.balanceOf(otcSwap.target)
+
+      // check the balance of buy token in bob
+      const balanceBeforeBob = await tokenB.balanceOf(bob.address)
+
+      // check the allowance of buy token for the contract by bob
+      const allowanceBefore = await tokenB.allowance(bob.address, otcSwap.target)
+
+      // Fill order
       await otcSwap.connect(bob).fillOrder(orderId)
 
-      // Check that order is no longer in active orders
-      const [makers, , , , , , , actives] = await otcSwap.getActiveOrders(0, 1)
-      expect(makers.length).to.equal(0)
-    });
-
-    it('should fail when filling expired order', async function () {
-      await tokenB.connect(bob).approve(otcSwap.target, buyAmount)
-
-      // Fast forward time beyond expiry
-      await time.increase(ORDER_EXPIRY + 1)
-
-      await expect(otcSwap.connect(bob).fillOrder(orderId)).to.be.revertedWith(
-        'Order expired'
-      )
-    });
-  });
-  describe('Active Orders Management', function () {
-    const sellAmount = ethers.parseEther('100')
-    const buyAmount = ethers.parseEther('200')
-
-    beforeEach(async function () {
-      // Create multiple orders with different makers
-      await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(3))
-      await tokenA.connect(bob).approve(otcSwap.target, sellAmount * BigInt(2))
-
-      // Create orders alternating between alice and Òbob
-      await otcSwap.connect(alice).createOrder(ZERO_ADDRESS, tokenA.target, sellAmount, tokenB.target, buyAmount)
-      await otcSwap.connect(bob).createOrder(ZERO_ADDRESS, tokenA.target, sellAmount, tokenB.target, buyAmount)
-      await otcSwap.connect(alice).createOrder(ZERO_ADDRESS, tokenA.target, sellAmount, tokenB.target, buyAmount)
-      await otcSwap.connect(bob).createOrder(ZERO_ADDRESS, tokenA.target, sellAmount, tokenB.target, buyAmount)
-      await otcSwap.connect(alice).createOrder(ZERO_ADDRESS, tokenA.target, sellAmount, tokenB.target, buyAmount)
+      // Check final balances
+      expect(await tokenB.balanceOf(alice.address)).to.equal(aliceInitialTokenB + buyAmount)
+      expect(await tokenA.balanceOf(bob.address)).to.equal(bobInitialTokenA + sellAmount)
     })
 
-    it('should maintain active orders correctly after operations', async function () {
-      // Fill an order
-      await tokenB.connect(charlie).approve(otcSwap.target, buyAmount)
-      await otcSwap.connect(charlie).fillOrder(2) // Fill order in middle
-
-      // Verify order 2 is filled
-      const orderAfterFill = await otcSwap.orders(2)
-      expect(orderAfterFill.active).to.be.false
-
-      // Cancel an order
-      await otcSwap.connect(alice).cancelOrder(4) // Cancel last order
-
-      // Get final state of active orders
-      const [finalMakers, , , , , , , actives] = await otcSwap.getActiveOrders(
-        0,
-        5
-      )
-
-      // Verify the correct number of orders remain
-      expect(finalMakers.length).to.equal(3) // Should have 3 active orders left
-
-      // Verify all remaining orders are marked as active
-      expect(actives.every((isActive) => isActive)).to.be.true
-
-      // Verify order states individually
-      for (let i = 0; i < 5; i++) {
-        const order = await otcSwap.orders(i)
-        if (i === 2 || i === 4) {
-          // Orders 2 and 4 should be inactive
-          expect(order.active).to.be.false
-        }
-      }
-
-      // Check that the total number of active orders is correct
-      const allOrders = await Promise.all(
-        Array(5)
-          .fill()
-          .map((_, i) => otcSwap.orders(i))
-      );
-      const activeCount = allOrders.filter((order) => order.active).length
-      expect(activeCount).to.equal(3)
-    });
-
-    it('should return correct order IDs with active orders', async function () {
-      const [
-        makers,
-        takers,
-        sellTokens,
-        sellAmounts,
-        buyTokens,
-        buyAmounts,
-        createdAts,
-        actives,
-        orderIds,
-        nextOffset
-      ] = await otcSwap.getActiveOrders(0, 5)
-
-      expect(orderIds.length).to.equal(5)
-
-      // Verify each order ID matches its corresponding order
-      for (let i = 0; i < orderIds.length; i++) {
-        const order = await otcSwap.orders(orderIds[i])
-        expect(order.maker).to.equal(makers[i])
-        expect(order.sellAmount).to.equal(sellAmounts[i])
-        expect(order.active).to.be.true
-      }
-
-      // Verify order IDs are sequential
-      for (let i = 0; i < orderIds.length; i++) {
-        expect(orderIds[i]).to.equal(BigInt(i))
-      }
-    })
-
-    it('should respect MAX_PAGE_SIZE limit', async function () {
-      const [makers] = await otcSwap.getActiveOrders(0, MAX_PAGE_SIZE + 1)
-      expect(makers.length).to.be.lte(MAX_PAGE_SIZE)
-    })
-
-    it('should handle pagination correctly', async function () {
-      // Get first page
-      const [makers1, , , , , , , , orderIds1, nextOffset1] =
-        await otcSwap.getActiveOrders(0, 2)
-
-      expect(makers1.length).to.equal(2)
-      expect(orderIds1.length).to.equal(2)
-
-      // Get second page using nextOffset
-      const [makers2, , , , , , , , orderIds2, nextOffset2] =
-        await otcSwap.getActiveOrders(nextOffset1, 2)
-
-      expect(makers2.length).to.equal(2)
-      expect(orderIds2.length).to.equal(2)
-
-      // Verify the sequence of order IDs
-      expect(orderIds1[0]).to.equal(BigInt(0))
-      expect(orderIds1[1]).to.equal(BigInt(1))
-      expect(orderIds2[0]).to.equal(BigInt(2))
-      expect(orderIds2[1]).to.equal(BigInt(3))
-
-      // Get last page
-      const [makers3, , , , , , , , orderIds3, nextOffset3] =
-        await otcSwap.getActiveOrders(nextOffset2, 2)
-
-      expect(makers3.length).to.equal(1) // Last page should have 1 order
-      expect(orderIds3.length).to.equal(1)
-      expect(orderIds3[0]).to.equal(BigInt(4)) // Last order ID
-
-      // Verify total number of orders retrieved equals expected total
-      const totalOrders = makers1.length + makers2.length + makers3.length
-      expect(totalOrders).to.equal(5)
-
-      // Verify makers alternate between alice and bob
-      expect(makers1[0].toLowerCase()).to.equal(alice.address.toLowerCase())
-      expect(makers1[1].toLowerCase()).to.equal(bob.address.toLowerCase())
-      expect(makers2[0].toLowerCase()).to.equal(alice.address.toLowerCase())
-      expect(makers2[1].toLowerCase()).to.equal(bob.address.toLowerCase())
-      expect(makers3[0].toLowerCase()).to.equal(alice.address.toLowerCase())
-    });
-
-    it('should handle empty pages correctly', async function () {
-      const [makers, , , , , , , , orderIds, nextOffset] =
-        await otcSwap.getActiveOrders(999, 2) // Use an offset beyond available orders
-
-      expect(makers.length).to.equal(0)
-      expect(orderIds.length).to.equal(0)
-      expect(nextOffset).to.equal(0)
-    })
-
-    it('should maintain pagination order after operations', async function () {
-      // Get first page
-      const [, , , , , , , , orderIds1] = await otcSwap.getActiveOrders(0, 2)
-
-      // Perform an operation (fill an order)
-      await tokenB.connect(charlie).approve(otcSwap.target, buyAmount)
-      await otcSwap.connect(charlie).fillOrder(1) // Fill the second order
-
-      // Get first page again
-      const [, , , , , , , , orderIds2] = await otcSwap.getActiveOrders(0, 2)
-
-      // Verify the filled order is not in the results
-      const secondPageIds = orderIds2.map((id) => id.toString())
-      expect(secondPageIds).to.not.include('1')
-
-      // Verify the number of orders decreased
-      const [makers] = await otcSwap.getActiveOrders(0, 10)
-      expect(makers.length).to.equal(4)
-    });
-
-    it('should handle order removal correctly', async function () {
-      // Fill an order and verify active orders update
-      await tokenB.connect(charlie).approve(otcSwap.target, buyAmount)
-      await otcSwap.connect(charlie).fillOrder(2)
-
-      // Get active orders after filling
-      const [makersAfterFill] = await otcSwap.getActiveOrders(0, 5)
-      expect(makersAfterFill.length).to.equal(4)
-
-      // Cancel an order and verify active orders update again
-      await otcSwap.connect(alice).cancelOrder(4)
-      const [makersAfterCancel] = await otcSwap.getActiveOrders(0, 5)
-      expect(makersAfterCancel.length).to.equal(3)
-    });
-
-    it('should not return expired orders', async function () {
-      // Fast forward time beyond expiry
-      await time.increase(ORDER_EXPIRY + 1)
-
-      const [makers] = await otcSwap.getActiveOrders(0, 5)
-      expect(makers.length).to.equal(0)
-    });
-  });
-
-  describe('Order Expiry', function () {
-    const sellAmount = ethers.parseEther('100')
-    const buyAmount = ethers.parseEther('200')
-
-    beforeEach(async function () {
+    it('should enforce taker restrictions', async function () {
+      // Create order with specific taker
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount)
-      await otcSwap
-        .connect(alice)
-        .createOrder(
+      await otcSwap.connect(alice).createOrder(
+        charlie.address, // specific taker
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: await otcSwap.orderCreationFee() }
+      )
+
+      // Setup for bob's attempt
+      await tokenB.connect(bob).approve(otcSwap.target, buyAmount)
+      await tokenB.connect(bob).transfer(otcSwap.target, buyAmount)
+
+      // Setup for charlie's attempt
+      await tokenB.connect(charlie).approve(otcSwap.target, buyAmount)
+      await tokenB.connect(charlie).transfer(otcSwap.target, buyAmount)
+
+      // Bob should not be able to fill
+      await expect(otcSwap.connect(bob).fillOrder(1))
+        .to.be.revertedWith('Not authorized to fill this order')
+
+      // Charlie should be able to fill
+      await otcSwap.connect(charlie).fillOrder(1)
+    })
+
+    it('should handle insufficient balance issues', async function () {
+      // Transfer all tokens away
+      const balance = await tokenB.balanceOf(bob.address)
+      await tokenB.connect(bob).transfer(charlie.address, balance)
+
+      await expect(otcSwap.connect(bob).fillOrder(orderId))
+        .to.be.revertedWith('Insufficient balance for buy token')
+    })
+
+    it('should emit correct events on fill', async function () {
+      // Pre-transfer buyTokens
+      await tokenB.connect(bob).transfer(otcSwap.target, buyAmount)
+
+      const tx = await otcSwap.connect(bob).fillOrder(orderId)
+      await expect(tx)
+        .to.emit(otcSwap, 'OrderFilled')
+        .withArgs(
+          orderId,
+          alice.address,
+          bob.address,
+          tokenA.target,
+          sellAmount,
+          tokenB.target,
+          buyAmount,
+          await time.latest()
+        )
+    })
+
+    it('should handle sequential fills correctly', async function () {
+      // Create multiple orders
+      await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(3))
+
+      for (let i = 1; i < 3; i++) {
+        await otcSwap.connect(alice).createOrder(
           ZERO_ADDRESS,
           tokenA.target,
           sellAmount,
           tokenB.target,
-          buyAmount
-        )
-    });
-
-    it('should allow filling just before expiry', async function () {
-      await tokenB.connect(bob).approve(otcSwap.target, buyAmount)
-      await time.increase(ORDER_EXPIRY - 60) // 1 minute before expiry
-      await expect(otcSwap.connect(bob).fillOrder(0)).to.not.be.reverted
-    })
-
-    it('should handle orders near expiry boundary', async function () {
-      await tokenB.connect(bob).approve(otcSwap.target, buyAmount)
-
-      // Test exactly at expiry
-      await time.increase(ORDER_EXPIRY)
-      await expect(otcSwap.connect(bob).fillOrder(0)).to.be.revertedWith(
-        'Order expired'
-      )
-
-      // Test one second after expiry
-      await time.increase(1)
-      await expect(otcSwap.connect(bob).fillOrder(0)).to.be.revertedWith(
-        'Order expired'
-      )
-    });
-  });
-
-  describe('Gas Optimization Tests', function () {
-    const sellAmount = ethers.parseEther('100')
-    const buyAmount = ethers.parseEther('200')
-
-    it('should show consistent gas costs for order lifecycle', async function () {
-      // First approve tokens for multiple orders
-      await tokenA
-        .connect(alice)
-        .approve(otcSwap.target, sellAmount * BigInt(3))
-
-      // Create three orders and measure gas
-      const gasCosts = []
-      for (let i = 0; i < 3; i++) {
-        const tx = await otcSwap
-          .connect(alice)
-          .createOrder(
-            ZERO_ADDRESS,
-            tokenA.target,
-            sellAmount,
-            tokenB.target,
-            buyAmount
-          )
-        const receipt = await tx.wait()
-        gasCosts.push({
-          orderNum: i + 1,
-          gasUsed: receipt.gasUsed
-        });
+          buyAmount,
+          { value: await otcSwap.orderCreationFee() }
+        );
       }
 
-      // Log gas costs with better formatting
-      console.log('\nGas costs for order creation:')
-      gasCosts.forEach(({ orderNum, gasUsed }) => {
-        console.log(`Order ${orderNum}: ${gasUsed.toString()} gas units`)
-      });
+      // Pre-transfer all buyTokens needed
+      // await tokenB.connect(bob).transfer(otcSwap.target, buyAmount * BigInt(3))
 
-      // Calculate percentage changes
-      for (let i = 1; i < gasCosts.length; i++) {
-        const percentChange = (
-          (Number(gasCosts[i].gasUsed - gasCosts[i - 1].gasUsed) /
-            Number(gasCosts[i - 1].gasUsed)) *
-          100
-        ).toFixed(2)
-        console.log(`Change from order ${i} to ${i + 1}: ${percentChange}%`)
-      }
-
-      // Test order filling gas costs
+      // approve all buyTokens needed
       await tokenB.connect(bob).approve(otcSwap.target, buyAmount * BigInt(3))
 
-      const fillGasCosts = []
+      // Fill orders sequentially
       for (let i = 0; i < 3; i++) {
-        const tx = await otcSwap.connect(bob).fillOrder(i)
-        const receipt = await tx.wait()
-        fillGasCosts.push({
-          orderNum: i + 1,
-          gasUsed: receipt.gasUsed
-        });
+        await otcSwap.connect(bob).fillOrder(i)
+        const order = await otcSwap.orders(i)
+        expect(order.status).to.equal(1) // Filled status
       }
+    });
+  });
 
-      // Log fill gas costs
-      console.log('\nGas costs for order filling:')
-      fillGasCosts.forEach(({ orderNum, gasUsed }) => {
-        console.log(`Fill ${orderNum}: ${gasUsed.toString()} gas units`)
-      });
+  describe('Order Cleanup', function () {
+    beforeEach(async function () {
+      // Approve enough tokens for multiple orders
+      await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(5))
 
-      // Calculate percentage changes for fills
-      for (let i = 1; i < fillGasCosts.length; i++) {
-        const percentChange = (
-          (Number(fillGasCosts[i].gasUsed - fillGasCosts[i - 1].gasUsed) /
-            Number(fillGasCosts[i - 1].gasUsed)) *
-          100
-        ).toFixed(2)
-        console.log(`Change from fill ${i} to ${i + 1}: ${percentChange}%`)
+      // Create first order with any fee
+      await otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: FIRST_ORDER_FEE }
+      );
+
+      // Create additional orders with updated fees
+      for (let i = 0; i < 2; i++) {
+        // Get current fee before each order
+        const currentFee = await otcSwap.orderCreationFee()
+
+        await otcSwap.connect(alice).createOrder(
+          ZERO_ADDRESS,
+          tokenA.target,
+          sellAmount,
+          tokenB.target,
+          buyAmount,
+          { value: currentFee }
+        )
       }
-
-      // Verify gas costs are within expected ranges
-      gasCosts.forEach(({ gasUsed }, index) => {
-        if (index > 0) {
-          // Convert BigInts to numbers for comparison
-          const difference = Math.abs(Number(gasUsed - gasCosts[0].gasUsed))
-          // Allow for some variation but not too much
-          expect(difference).to.be.lessThan(
-            50000,
-            'Gas cost variation should not be too large between orders'
-          )
-        }
-      });
     });
 
-    it('should analyze gas costs for different operations', async function () {
-      // Prepare tokens
-      await tokenA.connect(alice).approve(otcSwap.target, sellAmount)
+    it('should cleanup expired orders', async function () {
+      await time.increase(ORDER_EXPIRY + GRACE_PERIOD + 1)
+
+      const initialBalance = await ethers.provider.getBalance(charlie.address)
+      await otcSwap.connect(charlie).cleanupExpiredOrders()
+
+      const finalBalance = await ethers.provider.getBalance(charlie.address)
+      expect(finalBalance).to.be.gt(initialBalance)
+
+      // Verify orders were cleaned up
+      const firstOrder = await otcSwap.orders(0)
+      expect(firstOrder.maker).to.equal(ZERO_ADDRESS)
+    });
+  });
+
+  describe('Order Lifecycle', function () {
+    let orderId
+
+    beforeEach(async function () {
+      await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(2))
+
+      await otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: await otcSwap.orderCreationFee() }
+      )
+      orderId = 0
+    });
+
+    it('should track order status correctly through lifecycle', async function () {
+      let order = await otcSwap.orders(orderId)
+      expect(order.status).to.equal(0) // OrderStatus.Active
+
+      // Setup for fill
       await tokenB.connect(bob).approve(otcSwap.target, buyAmount)
+      await tokenB.connect(bob).transfer(otcSwap.target, buyAmount)
 
-      // Measure gas for order creation
-      const createTx = await otcSwap
-        .connect(alice)
-        .createOrder(
+      await otcSwap.connect(bob).fillOrder(orderId)
+
+      order = await otcSwap.orders(orderId)
+      expect(order.status).to.equal(1) // OrderStatus.Filled
+    })
+  });
+
+  describe('Order Cancellation - Edge Cases', function () {
+    beforeEach(async function () {
+      await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(5))
+      // Create multiple orders
+      for (let i = 0; i < 3; i++) {
+        await otcSwap.connect(alice).createOrder(
           ZERO_ADDRESS,
           tokenA.target,
           sellAmount,
           tokenB.target,
-          buyAmount
+          buyAmount,
+          { value: i === 0 ? FIRST_ORDER_FEE : await otcSwap.orderCreationFee() }
         )
-      const createReceipt = await createTx.wait()
-      const createGas = createReceipt.gasUsed
+      }
+    });
 
-      // Measure gas for order filling
-      const fillTx = await otcSwap.connect(bob).fillOrder(0)
-      const fillReceipt = await fillTx.wait()
-      const fillGas = fillReceipt.gasUsed
+    it('should prevent cancellation after grace period', async function () {
+      await time.increase(ORDER_EXPIRY + GRACE_PERIOD + 1)
+      await expect(otcSwap.connect(alice).cancelOrder(0))
+        .to.be.revertedWith('Grace period has expired')
+    })
 
-      // Create another order for cancellation
-      await tokenA.connect(alice).approve(otcSwap.target, sellAmount)
-      await otcSwap
-        .connect(alice)
-        .createOrder(
-          ZERO_ADDRESS,
-          tokenA.target,
-          sellAmount,
-          tokenB.target,
-          buyAmount
-        )
+    it('should allow cancellation just before grace period ends', async function () {
+      await time.increase(ORDER_EXPIRY + GRACE_PERIOD - 60) // 1 minute before expiry
+      await expect(otcSwap.connect(alice).cancelOrder(0))
+        .to.not.be.reverted
+    })
 
-      // Measure gas for order cancellation
-      const cancelTx = await otcSwap.connect(alice).cancelOrder(1)
-      const cancelReceipt = await cancelTx.wait()
-      const cancelGas = cancelReceipt.gasUsed
+    it('should prevent cancellation of filled orders', async function () {
+      // Setup token approvals and transfers
+      await tokenB.connect(bob).approve(otcSwap.target, buyAmount)
+      await tokenB.connect(bob).transfer(otcSwap.target, buyAmount)
 
-      console.log('\nGas costs comparison:')
-      console.log(`Order creation: ${createGas.toString()} gas units`)
-      console.log(`Order filling: ${fillGas.toString()} gas units`)
-      console.log(`Order cancellation: ${cancelGas.toString()} gas units`)
+      // Fill the order
+      await otcSwap.connect(bob).fillOrder(0)
 
-      // Break down the operations
-      console.log('\nRelative gas costs:')
-      console.log(
-        `Fill is ${((Number(fillGas) / Number(createGas)) * 100).toFixed(
-          1
-        )}% of creation cost`
+      // Try to cancel filled order
+      await expect(otcSwap.connect(alice).cancelOrder(0))
+        .to.be.revertedWith('Order is not active')
+    });
+
+    it('should prevent cancellation by non-maker', async function () {
+      await expect(otcSwap.connect(bob).cancelOrder(0))
+        .to.be.revertedWith('Only maker can cancel order')
+    })
+
+    it('should handle cancellation of multiple orders in same block', async function () {
+      for (let i = 0; i < 3; i++) {
+        await otcSwap.connect(alice).cancelOrder(i)
+        const order = await otcSwap.orders(i)
+        expect(order.status).to.equal(2) // Canceled status
+      }
+    });
+  });
+
+  describe('Order Cleanup - Edge Cases', function () {
+    let misbehavingToken
+
+    it('should handle failed token transfers during cleanup', async function () {
+      // Deploy pausable token
+      const PausableToken = await ethers.getContractFactory('MisbehavingToken')
+      const pausableToken = await PausableToken.deploy()
+
+      // Give Alice some tokens
+      await pausableToken.mint(alice.address, sellAmount)
+
+      // Create order
+      const currentFee = await otcSwap.orderCreationFee()
+      await pausableToken.connect(alice).approve(otcSwap.target, sellAmount)
+
+      const tx = await otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        pausableToken.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: currentFee || FIRST_ORDER_FEE }
       )
-      console.log(
-        `Cancel is ${((Number(cancelGas) / Number(createGas)) * 100).toFixed(
-          1
-        )}% of creation cost`
+      await tx.wait()
+
+      // Verify initial state
+      const orderId = 0
+      const originalOrder = await otcSwap.orders(orderId)
+      // Pause the token
+      await pausableToken.pause()
+
+      // Advance time
+      await time.increase(ORDER_EXPIRY + GRACE_PERIOD + 1)
+
+      // check the balance of buy token in contract before cleanup
+      const balanceBefore = await pausableToken.balanceOf(otcSwap.target)
+
+      // Try cleanup
+      const cleanupTx = await otcSwap.connect(charlie).cleanupExpiredOrders()
+      const receipt = await cleanupTx.wait()
+
+      // Print all events
+      for (const log of receipt.logs) {
+        try {
+          const parsedLog = otcSwap.interface.parseLog(log)
+          if (parsedLog) {
+            // console.log('OTCSwap Event:', parsedLog.name)
+            // console.log('Args:', parsedLog.args)
+          }
+        } catch (e) {
+          try {
+            const parsedLog = pausableToken.interface.parseLog(log)
+            if (parsedLog) {
+              // console.log('PausableToken Event:', parsedLog.name)
+              // console.log('Args:', parsedLog.args)
+            }
+          } catch (e2) {
+            // Skip unparseable logs
+          }
+        }
+      }
+
+      // Check final states
+      const orderAfterCleanup = await otcSwap.orders(orderId)
+      const newOrderId = await otcSwap.nextOrderId() - 1n
+      const retryOrder = await otcSwap.orders(newOrderId)
+
+      // check the balance of buy token in contract after cleanup
+      const balanceAfter = await pausableToken.balanceOf(otcSwap.target)
+
+      // Final state verification
+      expect(retryOrder.tries).to.equal(1n)
+    });
+
+    it('should handle MAX_RETRY_ATTEMPTS correctly', async function () {
+      // Deploy contracts
+      const [owner, alice, bob, charlie] = await ethers.getSigners()
+      const OTCSwap = await ethers.getContractFactory('OTCSwap')
+      const otcSwap = await OTCSwap.deploy()
+
+      const PausableToken = await ethers.getContractFactory('MisbehavingToken')
+      const misbehavingToken = await PausableToken.deploy()
+      const TokenB = await ethers.getContractFactory('MisbehavingToken')
+      const tokenB = await TokenB.deploy()
+
+      // Setup amounts
+      const sellAmount = ethers.parseEther('100')
+      const buyAmount = ethers.parseEther('50')
+      const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+
+      // Mint tokens to Alice
+      await misbehavingToken.mint(alice.address, sellAmount)
+
+      // Create order
+      await misbehavingToken.connect(alice).approve(otcSwap.target, sellAmount)
+      await otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        misbehavingToken.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: await otcSwap.orderCreationFee() }
       )
+
+      // Advance time and pause token
+      await time.increase(ORDER_EXPIRY + GRACE_PERIOD + 1)
+      await misbehavingToken.pause()
+
+      const initialOrderId = await otcSwap.firstOrderId()
+
+      // Perform cleanup MAX_RETRY_ATTEMPTS + 1 times
+      for (let i = 0; i <= 10; i++) {
+        await otcSwap.connect(charlie).cleanupExpiredOrders()
+      }
+
+      // The order should be deleted after max retries
+      const order = await otcSwap.orders(initialOrderId)
+      expect(order.maker).to.equal(ZERO_ADDRESS)
+    });
+
+    it('should maintain order status through failed cleanup attempts', async function () {
+      // Deploy contracts
+      const [owner, alice, bob, charlie] = await ethers.getSigners()
+      const OTCSwap = await ethers.getContractFactory('OTCSwap')
+      const otcSwap = await OTCSwap.deploy()
+
+      const PausableToken = await ethers.getContractFactory('MisbehavingToken')
+      const misbehavingToken = await PausableToken.deploy()
+      const TokenB = await ethers.getContractFactory('MisbehavingToken')
+      const tokenB = await TokenB.deploy()
+
+      // Setup amounts
+      const sellAmount = ethers.parseEther('100')
+      const buyAmount = ethers.parseEther('50')
+      const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+
+      // Mint tokens to Alice
+      await misbehavingToken.mint(alice.address, sellAmount)
+
+      // Create order
+      await misbehavingToken.connect(alice).approve(otcSwap.target, sellAmount)
+      const orderId = await otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        misbehavingToken.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount,
+        { value: await otcSwap.orderCreationFee() }
+      )
+
+      // Advance time and pause token
+      await time.increase(ORDER_EXPIRY + GRACE_PERIOD + 1)
+      await misbehavingToken.pause()
+
+      await otcSwap.connect(charlie).cleanupExpiredOrders()
+
+      // Check that retry order maintains the same status
+      const nextOrderId = await otcSwap.nextOrderId()
+      const retryOrder = await otcSwap.orders(nextOrderId - BigInt(1))
+      expect(retryOrder.status).to.equal(0) // Active
     });
   });
 });
