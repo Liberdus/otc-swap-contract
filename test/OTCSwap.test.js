@@ -343,6 +343,7 @@ describe('OTCSwap', function () {
       const firstOrder = await otcSwap.orders(0)
       expect(firstOrder.maker).to.equal(ZERO_ADDRESS)
     });
+
   });
 
   describe('Order Lifecycle', function () {
@@ -593,5 +594,163 @@ describe('OTCSwap', function () {
       const retryOrder = await otcSwap.orders(nextOrderId - BigInt(1))
       expect(retryOrder.status).to.equal(0) // Active
     });
+
+    it('should not clean more than MAX_CLEANUP_BATCH orders per call', async function () {
+// Create multiple orders (more than MAX_CLEANUP_BATCH which is 1)
+      const numOrders = 3
+      await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(numOrders))
+
+      // Create orders
+      for (let i = 0; i < numOrders; i++) {
+        await otcSwap.connect(alice).createOrder(
+          ZERO_ADDRESS,
+          tokenA.target,
+          sellAmount,
+          tokenB.target,
+          buyAmount,
+          { value: i === 0 ? FIRST_ORDER_FEE : await otcSwap.orderCreationFee() }
+        )
+      }
+
+      // Record initial state
+      const initialFirstOrderId = await otcSwap.firstOrderId()
+      const initialNextOrderId = await otcSwap.nextOrderId()
+
+      // Helper function to count expired active orders
+      const countExpiredOrders = async () => {
+        let count = 0
+        const currentTime = await time.latest()
+        for (let i = initialFirstOrderId; i < initialNextOrderId; i++) {
+          const order = await otcSwap.orders(i)
+          console.log('order', order, `is expired: `, order.status, order.timestamp, order.timestamp + BigInt(ORDER_EXPIRY + GRACE_PERIOD) < currentTime)
+          if (order.maker !== ZERO_ADDRESS &&
+            order.status == 0 && // Active status
+            order.timestamp + BigInt(ORDER_EXPIRY + GRACE_PERIOD) < currentTime) {
+            count++
+          }
+        }
+        return count
+      }
+
+      // Advance time past expiry and grace period
+      await time.increase(ORDER_EXPIRY + GRACE_PERIOD + 10)
+
+      // Count initial expired orders
+      const initialExpiredCount = await countExpiredOrders()
+      console.log('\nInitial expired orders:', initialExpiredCount)
+      expect(initialExpiredCount).to.equal(numOrders)
+
+      // First cleanup
+      console.log('\nFirst cleanup (order 0):')
+      const tx1 = await otcSwap.connect(charlie).cleanupExpiredOrders()
+      const receipt1 = await tx1.wait()
+      console.log('Gas used:', receipt1.gasUsed.toString())
+
+      // Verify exactly one order was cleaned
+      const expiredCountAfterFirst = await countExpiredOrders()
+      console.log('Expired orders after first cleanup:', expiredCountAfterFirst)
+      expect(expiredCountAfterFirst).to.equal(initialExpiredCount - 1)
+
+      // Second cleanup
+      console.log('\nSecond cleanup (order 1):')
+      const tx2 = await otcSwap.connect(charlie).cleanupExpiredOrders()
+      const receipt2 = await tx2.wait()
+      console.log('Gas used:', receipt2.gasUsed.toString())
+
+      // Verify exactly one more order was cleaned
+      const expiredCountAfterSecond = await countExpiredOrders()
+      console.log('Expired orders after second cleanup:', expiredCountAfterSecond)
+      expect(expiredCountAfterSecond).to.equal(initialExpiredCount - 2)
+
+      // Third cleanup
+      console.log('\nThird cleanup (order 2):')
+      const tx3 = await otcSwap.connect(charlie).cleanupExpiredOrders()
+      const receipt3 = await tx3.wait()
+      console.log('Gas used:', receipt3.gasUsed.toString())
+
+      // Verify all orders are now cleaned
+      const finalExpiredCount = await countExpiredOrders()
+      console.log('Expired orders after final cleanup:', finalExpiredCount)
+      expect(finalExpiredCount).to.equal(0)
+
+      // Additional verification that orders were cleaned in sequence
+      for (let i = 0; i < numOrders; i++) {
+        const order = await otcSwap.orders(initialFirstOrderId + BigInt(i))
+        expect(order.maker).to.equal(ZERO_ADDRESS, `Order ${i} should be cleaned`)
+      }
+    })
+
+    it('should compare cleanup costs vs earned rewards', async function () {
+      // Create multiple orders (more than MAX_CLEANUP_BATCH which is 1)
+      const numOrders = 3
+      await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(numOrders))
+
+      // Create orders and track total fees paid
+      let totalFeesPaid = BigInt(0)
+      for (let i = 0; i < numOrders; i++) {
+        const fee = i === 0 ? FIRST_ORDER_FEE : await otcSwap.orderCreationFee()
+        totalFeesPaid += fee
+
+        await otcSwap.connect(alice).createOrder(
+          ZERO_ADDRESS,
+          tokenA.target,
+          sellAmount,
+          tokenB.target,
+          buyAmount,
+          { value: fee }
+        )
+      }
+
+      console.log('\nTotal fees paid for orders:', ethers.formatEther(totalFeesPaid), 'ETH')
+
+      // Advance time past expiry and grace period
+      await time.increase(ORDER_EXPIRY + GRACE_PERIOD + 1)
+
+      // Track charlie's balance changes and gas costs
+      const charlieBalanceBefore = await ethers.provider.getBalance(charlie.address)
+
+      // First cleanup
+      console.log('\nFirst cleanup (order 0):')
+      const tx1 = await otcSwap.connect(charlie).cleanupExpiredOrders()
+      const receipt1 = await tx1.wait()
+      const gasCost1 = receipt1.gasUsed * receipt1.gasPrice
+      console.log('Gas used:', receipt1.gasUsed.toString())
+      console.log('Gas cost:', ethers.formatEther(gasCost1), 'ETH')
+
+      // Second cleanup
+      console.log('\nSecond cleanup (order 1):')
+      const tx2 = await otcSwap.connect(charlie).cleanupExpiredOrders()
+      const receipt2 = await tx2.wait()
+      const gasCost2 = receipt2.gasUsed * receipt2.gasPrice
+      console.log('Gas used:', receipt2.gasUsed.toString())
+      console.log('Gas cost:', ethers.formatEther(gasCost2), 'ETH')
+
+      // Third cleanup
+      console.log('\nThird cleanup (order 2):')
+      const tx3 = await otcSwap.connect(charlie).cleanupExpiredOrders()
+      const receipt3 = await tx3.wait()
+      const gasCost3 = receipt3.gasUsed * receipt3.gasPrice
+      console.log('Gas used:', receipt3.gasUsed.toString())
+      console.log('Gas cost:', ethers.formatEther(gasCost3), 'ETH')
+
+      const charlieBalanceAfter = await ethers.provider.getBalance(charlie.address)
+      const totalGasCost = gasCost1 + gasCost2 + gasCost3
+      const totalReward = charlieBalanceAfter - charlieBalanceBefore + totalGasCost
+
+      console.log('\nProfit/Loss Analysis:')
+      console.log('Total gas cost:', ethers.formatEther(totalGasCost), 'ETH')
+      console.log('Total reward earned:', ethers.formatEther(totalReward), 'ETH')
+      console.log('Net profit:', ethers.formatEther(totalReward - totalGasCost), 'ETH')
+      console.log('Profit margin:', ((Number(totalReward) / Number(totalGasCost) - 1) * 100).toFixed(2), '%')
+
+      // Compare with initial fees
+      console.log('\nFee Distribution:')
+      console.log('Original fees paid:', ethers.formatEther(totalFeesPaid), 'ETH')
+      console.log('Rewards paid out:', ethers.formatEther(totalReward), 'ETH')
+      console.log('Fee retention rate:', (Number(totalReward) / Number(totalFeesPaid) * 100).toFixed(2), '%')
+
+      // Verify fees were distributed correctly
+      expect(totalReward).to.equal(totalFeesPaid)
+    })
   });
 });
