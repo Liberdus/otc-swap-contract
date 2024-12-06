@@ -194,9 +194,6 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         accumulatedFees += orderCreationFeeAmount;
 
         // Transfer sell token
-        // Accumulate the creation fee
-        accumulatedFees += msg.value;
-
         IERC20(sellToken).safeTransferFrom(msg.sender, address(this), sellAmount);
 
         uint256 orderId = nextOrderId++;
@@ -227,11 +224,6 @@ contract OTCSwap is ReentrancyGuard, Ownable {
             feeToken,
             orderCreationFeeAmount
         );
-
-        // Update fee using dampening formula: fee = 100 * (9 * currentFee + gasUsed) / 10
-        uint256 gasUsed = startGas - gasleft();
-        averageGasUsed = (FEE_DAMPENING_FACTOR * averageGasUsed + gasUsed) / (FEE_DAMPENING_FACTOR + 1);
-        orderCreationFee = 100 * averageGasUsed;
 
         return orderId;
     }

@@ -6,6 +6,7 @@ describe('OTCSwap', function () {
   let otcSwap
   let tokenA
   let tokenB
+  let feeToken
   let owner
   let alice
   let bob
@@ -19,19 +20,27 @@ describe('OTCSwap', function () {
   // Fixed test values
   const sellAmount = ethers.parseEther('100')
   const buyAmount = ethers.parseEther('200')
-  const FIRST_ORDER_FEE = ethers.parseEther('0.01') // Any value works for first order
+  const ORDER_FEE = ethers.parseUnits('1', 6) // $1 in USDC (6 decimals)
+  const generousFeeAllowance = ORDER_FEE * BigInt(1000)
 
   beforeEach(async function () {
     [owner, alice, bob, charlie] = await ethers.getSigners()
 
+    // Deploy test tokens
     const TestToken = await ethers.getContractFactory('TestToken')
     tokenA = await TestToken.deploy('Token A', 'TKA')
     await tokenA.waitForDeployment()
     tokenB = await TestToken.deploy('Token B', 'TKB')
     await tokenB.waitForDeployment()
 
+    // Deploy fee token (USDC mock with 6 decimals)
+    const FeeToken = await ethers.getContractFactory('TestTokenDecimals')
+    feeToken = await FeeToken.deploy('USD Coin', 'USDC', 6)
+    await feeToken.waitForDeployment()
+
+    // Deploy OTCSwap with fee token configuration
     const OTCSwap = await ethers.getContractFactory('OTCSwap')
-    otcSwap = await OTCSwap.deploy()
+    otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE)
     await otcSwap.waitForDeployment()
 
     // Distribute tokens
@@ -41,119 +50,111 @@ describe('OTCSwap', function () {
     await tokenB.transfer(alice.address, INITIAL_SUPPLY / BigInt(4))
     await tokenB.transfer(bob.address, INITIAL_SUPPLY / BigInt(4))
     await tokenB.transfer(charlie.address, INITIAL_SUPPLY / BigInt(4))
-  });
+
+    // Distribute fee tokens
+    await feeToken.mint(alice.address, ORDER_FEE * BigInt(1000))
+    await feeToken.mint(bob.address, ORDER_FEE * BigInt(1000))
+    await feeToken.mint(charlie.address, ORDER_FEE * BigInt(1000))
+  })
 
   describe('Contract Administration', function () {
-    it('should allow owner to disable contract', async function () {
-      const latestTime = await time.latest()
-      const tx = await otcSwap.connect(owner).disableContract()
+    it('should allow owner to update fee configuration', async function () {
+      const newFeeAmount = ORDER_FEE * BigInt(2)
+      const tx = await otcSwap.connect(owner).updateFeeConfig(feeToken.target, newFeeAmount)
+
       await expect(tx)
-        .to.emit(otcSwap, 'ContractDisabled')
-        .withArgs(owner.address, latestTime + 1)
-      expect(await otcSwap.isDisabled()).to.be.true
+        .to.emit(otcSwap, 'FeeConfigUpdated')
+        .withArgs(feeToken.target, newFeeAmount, await time.latest())
+
+      expect(await otcSwap.feeToken()).to.equal(feeToken.target)
+      expect(await otcSwap.orderCreationFeeAmount()).to.equal(newFeeAmount)
     })
 
-    it('should prevent non-owner from disabling contract', async function () {
-      await expect(otcSwap.connect(alice).disableContract())
+    it('should prevent non-owner from updating fee configuration', async function () {
+      await expect(otcSwap.connect(alice).updateFeeConfig(feeToken.target, ORDER_FEE))
         .to.be.revertedWithCustomError(otcSwap, 'OwnableUnauthorizedAccount')
         .withArgs(alice.address)
     })
 
-    it('should prevent creating orders when contract is disabled', async function () {
-      await otcSwap.connect(owner).disableContract()
-      await tokenA.connect(alice).approve(otcSwap.target, sellAmount)
-      await expect(otcSwap.connect(alice).createOrder(
-        ZERO_ADDRESS,
-        tokenA.target,
-        sellAmount,
-        tokenB.target,
-        buyAmount,
-        { value: FIRST_ORDER_FEE }
-      )).to.be.revertedWith('Contract is disabled')
+    it('should prevent setting invalid fee configuration', async function () {
+      await expect(otcSwap.connect(owner).updateFeeConfig(ZERO_ADDRESS, ORDER_FEE))
+        .to.be.revertedWith('Invalid fee token')
+
+      await expect(otcSwap.connect(owner).updateFeeConfig(feeToken.target, 0))
+        .to.be.revertedWith('Invalid fee amount')
+    })
+
+    it('should allow owner to disable contract', async function () {
+      const tx = await otcSwap.connect(owner).disableContract()
+
+      await expect(tx)
+        .to.emit(otcSwap, 'ContractDisabled')
+        .withArgs(owner.address, await time.latest())
+
+      expect(await otcSwap.isDisabled()).to.be.true
     })
   });
 
   describe('Order Creation with Fees', function () {
     beforeEach(async function () {
-      // Approve enough tokens for multiple orders
+      // Approve tokens for order creation
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(5))
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
     })
 
-    it('should accept any fee for first order', async function () {
-      await expect(otcSwap.connect(alice).createOrder(
+    it('should create order with valid fee token payment', async function () {
+      const tx = await otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS,
         tokenA.target,
         sellAmount,
         tokenB.target,
-        buyAmount,
-        { value: FIRST_ORDER_FEE }
-      )).to.not.be.reverted
+        buyAmount
+      )
+
+      await expect(tx)
+        .to.emit(otcSwap, 'OrderCreated')
+        .withArgs(
+          0,
+          alice.address,
+          ZERO_ADDRESS,
+          tokenA.target,
+          sellAmount,
+          tokenB.target,
+          buyAmount,
+          await time.latest(),
+          feeToken.target,
+          ORDER_FEE
+        )
+
+      // Verify fee token transfer
+      expect(await feeToken.balanceOf(otcSwap.target)).to.equal(ORDER_FEE)
     })
 
-    it('should enforce fee limits for subsequent orders', async function () {
-      // Create first order to establish fee baseline
-      await otcSwap.connect(alice).createOrder(
-        ZERO_ADDRESS,
-        tokenA.target,
-        sellAmount,
-        tokenB.target,
-        buyAmount,
-        { value: FIRST_ORDER_FEE }
-      )
+    it('should fail if fee token allowance is insufficient', async function () {
+      await feeToken.connect(alice).approve(otcSwap.target, 0)
 
-      const currentFee = await otcSwap.orderCreationFee()
-
-      // Ensure currentFee is not 0
-      expect(currentFee).to.be.gt(0, 'Fee should be greater than 0 after first order')
-
-      const minFee = (currentFee * BigInt(90)) / BigInt(100) // 90%
-      const maxFee = (currentFee * BigInt(150)) / BigInt(100) // 150%
-
-      // Test fee too low
       await expect(otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS,
         tokenA.target,
         sellAmount,
         tokenB.target,
-        buyAmount,
-        { value: minFee - BigInt(1) }
-      )).to.be.revertedWith('Fee too low')
+        buyAmount
+      )).to.be.revertedWith('Insufficient allowance for fee')
+    })
 
-      // Test fee too high
+    it('should fail if fee token balance is insufficient', async function () {
+      // Transfer away all fee tokens
+      const balance = await feeToken.balanceOf(alice.address)
+      await feeToken.connect(alice).transfer(bob.address, balance)
+
       await expect(otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS,
         tokenA.target,
         sellAmount,
         tokenB.target,
-        buyAmount,
-        { value: maxFee + BigInt(1) }
-      )).to.be.revertedWith('Fee too high')
-
-      // Test acceptable fee
-      await expect(otcSwap.connect(alice).createOrder(
-        ZERO_ADDRESS,
-        tokenA.target,
-        sellAmount,
-        tokenB.target,
-        buyAmount,
-        { value: currentFee }
-      )).to.not.be.reverted
-    });
-
-    it('should accumulate fees correctly', async function () {
-      const initialAccumulatedFees = await otcSwap.accumulatedFees()
-
-      await otcSwap.connect(alice).createOrder(
-        ZERO_ADDRESS,
-        tokenA.target,
-        sellAmount,
-        tokenB.target,
-        buyAmount,
-        { value: FIRST_ORDER_FEE }
-      )
-
-      expect(await otcSwap.accumulatedFees()).to.equal(initialAccumulatedFees + FIRST_ORDER_FEE)
-    });
+        buyAmount
+      )).to.be.revertedWith('Insufficient balance for fee')
+    })
   });
 
   describe('Order Filling', function () {
@@ -164,6 +165,9 @@ describe('OTCSwap', function () {
     beforeEach(async function () {
       // Approve tokens for alice (maker)
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount)
+      // Approve fee token for alice
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
+
       // Transfer and approve tokens for bob (taker)
       await tokenB.connect(bob).approve(otcSwap.target, buyAmount)
 
@@ -173,11 +177,10 @@ describe('OTCSwap', function () {
         tokenA.target,
         sellAmount,
         tokenB.target,
-        buyAmount,
-        { value: FIRST_ORDER_FEE }
+        buyAmount
       )
       orderId = 0
-    });
+    })
 
     it('should successfully fill a valid order', async function () {
       // Check initial balances
@@ -216,13 +219,14 @@ describe('OTCSwap', function () {
     it('should enforce taker restrictions', async function () {
       // Create order with specific taker
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount)
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
+
       await otcSwap.connect(alice).createOrder(
         charlie.address, // specific taker
         tokenA.target,
         sellAmount,
         tokenB.target,
         buyAmount,
-        { value: await otcSwap.orderCreationFee() }
       )
 
       // Setup for bob's attempt
@@ -280,7 +284,6 @@ describe('OTCSwap', function () {
           sellAmount,
           tokenB.target,
           buyAmount,
-          { value: await otcSwap.orderCreationFee() }
         );
       }
 
@@ -301,49 +304,122 @@ describe('OTCSwap', function () {
 
   describe('Order Cleanup', function () {
     beforeEach(async function () {
-      // Approve enough tokens for multiple orders
+      // Approve tokens for order creation
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(5))
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
+    })
 
-      // Create first order with any fee
-      await otcSwap.connect(alice).createOrder(
-        ZERO_ADDRESS,
-        tokenA.target,
-        sellAmount,
-        tokenB.target,
-        buyAmount,
-        { value: FIRST_ORDER_FEE }
-      );
-
-      // Create additional orders with updated fees
-      for (let i = 0; i < 2; i++) {
-        // Get current fee before each order
-        const currentFee = await otcSwap.orderCreationFee()
-
+    it('should cleanup one expired order per call', async function () {
+      // Create multiple orders
+      for (let i = 0; i < 3; i++) {
         await otcSwap.connect(alice).createOrder(
           ZERO_ADDRESS,
           tokenA.target,
           sellAmount,
           tokenB.target,
-          buyAmount,
-          { value: currentFee }
+          buyAmount
         )
       }
-    });
 
-    it('should cleanup expired orders', async function () {
       await time.increase(ORDER_EXPIRY + GRACE_PERIOD + 1)
 
-      const initialBalance = await ethers.provider.getBalance(charlie.address)
+      // First cleanup
+      const charlieInitialBalance = await feeToken.balanceOf(charlie.address)
       await otcSwap.connect(charlie).cleanupExpiredOrders()
 
-      const finalBalance = await ethers.provider.getBalance(charlie.address)
-      expect(finalBalance).to.be.gt(initialBalance)
+      // Verify only one order was cleaned
+      expect(await feeToken.balanceOf(charlie.address)).to.equal(
+        charlieInitialBalance + ORDER_FEE
+      )
 
-      // Verify orders were cleaned up
       const firstOrder = await otcSwap.orders(0)
       expect(firstOrder.maker).to.equal(ZERO_ADDRESS)
-    });
 
+      // Second order should still exist
+      const secondOrder = await otcSwap.orders(1)
+      expect(secondOrder.maker).to.not.equal(ZERO_ADDRESS)
+    })
+
+    it('should distribute fees in correct token', async function () {
+      // Create first order with old fee token
+      await otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount
+      )
+
+      // Create order with old fee token (this will be order ID 0)
+      const oldFeeToken = feeToken
+
+      // Deploy new fee token and update config
+      const NewFeeToken = await ethers.getContractFactory('TestTokenDecimals')
+      const newFeeToken = await NewFeeToken.deploy('New Fee Token', 'NFT', 6)
+      await newFeeToken.waitForDeployment()
+
+      const newFeeAmount = ORDER_FEE * BigInt(2)
+      await otcSwap.connect(owner).updateFeeConfig(newFeeToken.target, newFeeAmount)
+
+      // check if the fee token is updated
+      expect(await otcSwap.feeToken()).to.equal(newFeeToken.target)
+      expect(await otcSwap.orderCreationFeeAmount()).to.equal(newFeeAmount)
+
+      // Mint and approve new fee token for alice to create second order
+      await newFeeToken.mint(alice.address, generousFeeAllowance * BigInt(2))
+      await newFeeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
+      const allowance = await newFeeToken.allowance(alice.address, otcSwap.target)
+
+      // Create order with new fee token (this will be order ID 1)
+      await otcSwap.connect(alice).createOrder(
+        ZERO_ADDRESS,
+        tokenA.target,
+        sellAmount,
+        tokenB.target,
+        buyAmount
+      )
+
+      await time.increase(ORDER_EXPIRY + GRACE_PERIOD + 1)
+
+      // Verify firstOrderId is 0 before cleanup starts
+      expect(await otcSwap.firstOrderId()).to.equal(0)
+
+      // Cleanup first order (old fee token)
+      const initialOldBalance = await oldFeeToken.balanceOf(charlie.address)
+      const tx1 = await otcSwap.connect(charlie).cleanupExpiredOrders()
+      const receipt1 = await tx1.wait()
+
+      // Verify order 0 was cleaned up through event
+      const cleanupEvent1 = receipt1.logs.find(
+        log => log.fragment?.name === 'OrderCleanedUp'
+      )
+      expect(cleanupEvent1.args.orderId).to.equal(0)
+
+      // Verify firstOrderId moved to 1
+      expect(await otcSwap.firstOrderId()).to.equal(1)
+
+      // Cleanup second order (new fee token)
+      const initialNewBalance = await newFeeToken.balanceOf(charlie.address)
+      const tx2 = await otcSwap.connect(charlie).cleanupExpiredOrders()
+      const receipt2 = await tx2.wait()
+
+      // Verify order 1 was cleaned up through event
+      const cleanupEvent2 = receipt2.logs.find(
+        log => log.fragment?.name === 'OrderCleanedUp'
+      )
+      expect(cleanupEvent2.args.orderId).to.equal(1)
+
+      // Verify firstOrderId moved to 2
+      expect(await otcSwap.firstOrderId()).to.equal(2)
+
+      // Verify fee distributions
+      expect(await oldFeeToken.balanceOf(charlie.address)).to.equal(
+        initialOldBalance + ORDER_FEE
+      )
+      expect(await newFeeToken.balanceOf(charlie.address)).to.equal(
+        initialNewBalance + newFeeAmount
+      )
+    })
   });
 
   describe('Order Lifecycle', function () {
@@ -351,6 +427,7 @@ describe('OTCSwap', function () {
 
     beforeEach(async function () {
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(2))
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
 
       await otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS,
@@ -358,7 +435,6 @@ describe('OTCSwap', function () {
         sellAmount,
         tokenB.target,
         buyAmount,
-        { value: await otcSwap.orderCreationFee() }
       )
       orderId = 0
     });
@@ -381,6 +457,7 @@ describe('OTCSwap', function () {
   describe('Order Cancellation - Edge Cases', function () {
     beforeEach(async function () {
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(5))
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
       // Create multiple orders
       for (let i = 0; i < 3; i++) {
         await otcSwap.connect(alice).createOrder(
@@ -389,7 +466,6 @@ describe('OTCSwap', function () {
           sellAmount,
           tokenB.target,
           buyAmount,
-          { value: i === 0 ? FIRST_ORDER_FEE : await otcSwap.orderCreationFee() }
         )
       }
     });
@@ -445,8 +521,8 @@ describe('OTCSwap', function () {
       await pausableToken.mint(alice.address, sellAmount)
 
       // Create order
-      const currentFee = await otcSwap.orderCreationFee()
       await pausableToken.connect(alice).approve(otcSwap.target, sellAmount)
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
 
       const tx = await otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS,
@@ -454,7 +530,6 @@ describe('OTCSwap', function () {
         sellAmount,
         tokenB.target,
         buyAmount,
-        { value: currentFee || FIRST_ORDER_FEE }
       )
       await tx.wait()
 
@@ -511,7 +586,7 @@ describe('OTCSwap', function () {
       // Deploy contracts
       const [owner, alice, bob, charlie] = await ethers.getSigners()
       const OTCSwap = await ethers.getContractFactory('OTCSwap')
-      const otcSwap = await OTCSwap.deploy()
+      const otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE)
 
       const PausableToken = await ethers.getContractFactory('MisbehavingToken')
       const misbehavingToken = await PausableToken.deploy()
@@ -528,13 +603,13 @@ describe('OTCSwap', function () {
 
       // Create order
       await misbehavingToken.connect(alice).approve(otcSwap.target, sellAmount)
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
       await otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS,
         misbehavingToken.target,
         sellAmount,
         tokenB.target,
         buyAmount,
-        { value: await otcSwap.orderCreationFee() }
       )
 
       // Advance time and pause token
@@ -557,7 +632,7 @@ describe('OTCSwap', function () {
       // Deploy contracts
       const [owner, alice, bob, charlie] = await ethers.getSigners()
       const OTCSwap = await ethers.getContractFactory('OTCSwap')
-      const otcSwap = await OTCSwap.deploy()
+      const otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE)
 
       const PausableToken = await ethers.getContractFactory('MisbehavingToken')
       const misbehavingToken = await PausableToken.deploy()
@@ -574,13 +649,13 @@ describe('OTCSwap', function () {
 
       // Create order
       await misbehavingToken.connect(alice).approve(otcSwap.target, sellAmount)
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
       const orderId = await otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS,
         misbehavingToken.target,
         sellAmount,
         tokenB.target,
         buyAmount,
-        { value: await otcSwap.orderCreationFee() }
       )
 
       // Advance time and pause token
@@ -599,6 +674,7 @@ describe('OTCSwap', function () {
 // Create multiple orders (more than MAX_CLEANUP_BATCH which is 1)
       const numOrders = 3
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(numOrders))
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
 
       // Create orders
       for (let i = 0; i < numOrders; i++) {
@@ -608,7 +684,6 @@ describe('OTCSwap', function () {
           sellAmount,
           tokenB.target,
           buyAmount,
-          { value: i === 0 ? FIRST_ORDER_FEE : await otcSwap.orderCreationFee() }
         )
       }
 
@@ -622,7 +697,6 @@ describe('OTCSwap', function () {
         const currentTime = await time.latest()
         for (let i = initialFirstOrderId; i < initialNextOrderId; i++) {
           const order = await otcSwap.orders(i)
-          console.log('order', order, `is expired: `, order.status, order.timestamp, order.timestamp + BigInt(ORDER_EXPIRY + GRACE_PERIOD) < currentTime)
           if (order.maker !== ZERO_ADDRESS &&
             order.status == 0 && // Active status
             order.timestamp + BigInt(ORDER_EXPIRY + GRACE_PERIOD) < currentTime) {
@@ -637,7 +711,6 @@ describe('OTCSwap', function () {
 
       // Count initial expired orders
       const initialExpiredCount = await countExpiredOrders()
-      console.log('\nInitial expired orders:', initialExpiredCount)
       expect(initialExpiredCount).to.equal(numOrders)
 
       // First cleanup
@@ -681,33 +754,32 @@ describe('OTCSwap', function () {
     })
 
     it('should compare cleanup costs vs earned rewards', async function () {
-      // Create multiple orders (more than MAX_CLEANUP_BATCH which is 1)
+      // Create multiple orders
       const numOrders = 3
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(numOrders))
+      await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
 
       // Create orders and track total fees paid
       let totalFeesPaid = BigInt(0)
       for (let i = 0; i < numOrders; i++) {
-        const fee = i === 0 ? FIRST_ORDER_FEE : await otcSwap.orderCreationFee()
-        totalFeesPaid += fee
-
+        totalFeesPaid += ORDER_FEE
         await otcSwap.connect(alice).createOrder(
           ZERO_ADDRESS,
           tokenA.target,
           sellAmount,
           tokenB.target,
-          buyAmount,
-          { value: fee }
+          buyAmount
         )
       }
 
-      console.log('\nTotal fees paid for orders:', ethers.formatEther(totalFeesPaid), 'ETH')
+      console.log('\nTotal fees paid for orders:', ethers.formatUnits(totalFeesPaid, 6), 'USDC')
 
       // Advance time past expiry and grace period
       await time.increase(ORDER_EXPIRY + GRACE_PERIOD + 1)
 
-      // Track charlie's balance changes and gas costs
-      const charlieBalanceBefore = await ethers.provider.getBalance(charlie.address)
+      // Track charlie's balances
+      const charlieInitialETH = await ethers.provider.getBalance(charlie.address)
+      const charlieInitialFeeToken = await feeToken.balanceOf(charlie.address)
 
       // First cleanup
       console.log('\nFirst cleanup (order 0):')
@@ -733,24 +805,32 @@ describe('OTCSwap', function () {
       console.log('Gas used:', receipt3.gasUsed.toString())
       console.log('Gas cost:', ethers.formatEther(gasCost3), 'ETH')
 
-      const charlieBalanceAfter = await ethers.provider.getBalance(charlie.address)
+      const charlieEndFeeToken = await feeToken.balanceOf(charlie.address)
       const totalGasCost = gasCost1 + gasCost2 + gasCost3
-      const totalReward = charlieBalanceAfter - charlieBalanceBefore + totalGasCost
+      const totalFeeTokenReward = charlieEndFeeToken - charlieInitialFeeToken
 
       console.log('\nProfit/Loss Analysis:')
       console.log('Total gas cost:', ethers.formatEther(totalGasCost), 'ETH')
-      console.log('Total reward earned:', ethers.formatEther(totalReward), 'ETH')
-      console.log('Net profit:', ethers.formatEther(totalReward - totalGasCost), 'ETH')
-      console.log('Profit margin:', ((Number(totalReward) / Number(totalGasCost) - 1) * 100).toFixed(2), '%')
+      console.log('Total fee token rewards:', ethers.formatUnits(totalFeeTokenReward, 6), 'USDC')
 
-      // Compare with initial fees
-      console.log('\nFee Distribution:')
-      console.log('Original fees paid:', ethers.formatEther(totalFeesPaid), 'ETH')
-      console.log('Rewards paid out:', ethers.formatEther(totalReward), 'ETH')
-      console.log('Fee retention rate:', (Number(totalReward) / Number(totalFeesPaid) * 100).toFixed(2), '%')
+      // Note: In a real environment, you would need to consider:
+      // 1. The ETH/USDC exchange rate to truly compare costs vs rewards
+      // 2. Gas price variations
+      // 3. Market conditions for token swaps
+      console.log('\nNote: Actual profitability depends on:')
+      console.log('- Current ETH/USDC exchange rate')
+      console.log('- Gas prices')
+      console.log('- Market conditions for token swaps')
 
       // Verify fees were distributed correctly
-      expect(totalReward).to.equal(totalFeesPaid)
+      expect(totalFeeTokenReward).to.equal(totalFeesPaid)
+
+      // Additional checks
+      console.log('\nFee Distribution Stats:')
+      console.log('Total fees collected:', ethers.formatUnits(totalFeesPaid, 6), 'USDC')
+      console.log('Total fees distributed:', ethers.formatUnits(totalFeeTokenReward, 6), 'USDC')
+      console.log('Distribution rate:', (Number(totalFeeTokenReward) / Number(totalFeesPaid) * 100).toFixed(2), '%')
+      console.log('Average gas per cleanup:', ethers.formatEther(totalGasCost / BigInt(numOrders)), 'ETH')
     })
   });
 });
