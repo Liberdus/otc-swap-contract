@@ -40,7 +40,7 @@ describe('OTCSwap', function () {
 
     // Deploy OTCSwap with fee token configuration
     const OTCSwap = await ethers.getContractFactory('OTCSwap')
-    otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE)
+    otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE, [tokenA.target, tokenB.target, feeToken.target])
     await otcSwap.waitForDeployment()
 
     // Distribute tokens
@@ -585,13 +585,14 @@ describe('OTCSwap', function () {
     it('should handle MAX_RETRY_ATTEMPTS correctly', async function () {
       // Deploy contracts
       const [owner, alice, bob, charlie] = await ethers.getSigners()
-      const OTCSwap = await ethers.getContractFactory('OTCSwap')
-      const otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE)
-
+      
       const PausableToken = await ethers.getContractFactory('MisbehavingToken')
       const misbehavingToken = await PausableToken.deploy()
       const TokenB = await ethers.getContractFactory('MisbehavingToken')
       const tokenB = await TokenB.deploy()
+      
+      const OTCSwap = await ethers.getContractFactory('OTCSwap')
+      const otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE, [tokenA.target, tokenB.target, feeToken.target, misbehavingToken.target])
 
       // Setup amounts
       const sellAmount = ethers.parseEther('100')
@@ -631,13 +632,14 @@ describe('OTCSwap', function () {
     it('should maintain order status through failed cleanup attempts', async function () {
       // Deploy contracts
       const [owner, alice, bob, charlie] = await ethers.getSigners()
-      const OTCSwap = await ethers.getContractFactory('OTCSwap')
-      const otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE)
-
+      
       const PausableToken = await ethers.getContractFactory('MisbehavingToken')
       const misbehavingToken = await PausableToken.deploy()
       const TokenB = await ethers.getContractFactory('MisbehavingToken')
       const tokenB = await TokenB.deploy()
+      
+      const OTCSwap = await ethers.getContractFactory('OTCSwap')
+      const otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE, [tokenA.target, tokenB.target, feeToken.target, misbehavingToken.target])
 
       // Setup amounts
       const sellAmount = ethers.parseEther('100')
