@@ -21,6 +21,7 @@ contract OTCSwap is ReentrancyGuard, Ownable {
     bool public isDisabled;
     
     mapping(address => bool) public allowedTokens;
+    address[] public allowedTokensList;
 
     enum OrderStatus {
         Active,     // Order is active and can be filled
@@ -152,6 +153,7 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         for (uint256 i = 0; i < _allowedTokens.length; i++) {
             require(_allowedTokens[i] != address(0), "Invalid token address");
             allowedTokens[_allowedTokens[i]] = true;
+            allowedTokensList.push(_allowedTokens[i]);
         }
         
         emit FeeConfigUpdated(_feeToken, _feeAmount, block.timestamp);
@@ -177,10 +179,37 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         
         for (uint256 i = 0; i < tokens.length; i++) {
             require(tokens[i] != address(0), "Invalid token address");
-            allowedTokens[tokens[i]] = allowed[i];
+            
+            if (allowed[i] && !allowedTokens[tokens[i]]) {
+                // Adding new token
+                allowedTokens[tokens[i]] = true;
+                allowedTokensList.push(tokens[i]);
+            } else if (!allowed[i] && allowedTokens[tokens[i]]) {
+                // Removing existing token
+                allowedTokens[tokens[i]] = false;
+                _removeFromAllowedTokensList(tokens[i]);
+            }
         }
         
         emit AllowedTokensUpdated(tokens, allowed, block.timestamp);
+    }
+
+    function _removeFromAllowedTokensList(address tokenToRemove) internal {
+        for (uint256 i = 0; i < allowedTokensList.length; i++) {
+            if (allowedTokensList[i] == tokenToRemove) {
+                allowedTokensList[i] = allowedTokensList[allowedTokensList.length - 1];
+                allowedTokensList.pop();
+                break;
+            }
+        }
+    }
+
+    function getAllowedTokens() external view returns (address[] memory) {
+        return allowedTokensList;
+    }
+
+    function getAllowedTokensCount() external view returns (uint256) {
+        return allowedTokensList.length;
     }
 
     function createOrder(
