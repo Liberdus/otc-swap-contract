@@ -7,22 +7,24 @@
 const hre = require("hardhat");
 
 async function main() {
-  const currentTimestampInSeconds = Math.round(Date.now() / 1000);
-  const unlockTime = currentTimestampInSeconds + 60;
+  console.log("Deploying MisbehavingToken with pause functionality...");
 
-  const lockedAmount = hre.ethers.parseEther("0.001");
+  const MisbehavingToken = await hre.ethers.getContractFactory("MisbehavingToken");
+  const misbehavingToken = await MisbehavingToken.deploy();
 
-  const lock = await hre.ethers.deployContract("Lock", [unlockTime], {
-    value: lockedAmount,
-  });
+  await misbehavingToken.waitForDeployment();
 
-  await lock.waitForDeployment();
-
-  console.log(
-    `Lock with ${ethers.formatEther(
-      lockedAmount
-    )}ETH and unlock timestamp ${unlockTime} deployed to ${lock.target}`
-  );
+  console.log("MisbehavingToken deployed to:", misbehavingToken.target);
+  console.log("Token name:", await misbehavingToken.name());
+  console.log("Token symbol:", await misbehavingToken.symbol());
+  console.log("Total supply:", hre.ethers.formatEther(await misbehavingToken.totalSupply()));
+  console.log("Owner:", await misbehavingToken.owner());
+  console.log("Paused status:", await misbehavingToken.paused());
+  
+  console.log("\nPause functions available:");
+  console.log("- pause(): Pauses all token transfers (owner only)");
+  console.log("- unpause(): Resumes token transfers (owner only)");
+  console.log("- mint(address to, uint256 amount): Mints new tokens (anyone can call)");
 }
 
 // We recommend this pattern to be able to use async/await everywhere

@@ -1,0 +1,37 @@
+{
+  "network": "amoy",
+  "deployer": "0x7F772C7D3C6d6b5c6777C927827F119e59DDcdb0",
+  "contracts": {
+    "otcSwap": {
+      "address": "0x0BE723F88aDb867022fA0a71EB82365556cb3c8C",
+      "feeAmount": "0.1",
+      "allowedTokens": [
+        "0x224708430f2FF85E32cd77e986eE558Eb8cC77D9",
+        "0xB93D55595796D8c59beFC0C9045415B4d567f27c",
+        "0x963322CC131A072F333A76ac321Bb80b6cb5375C"
+      ]
+    },
+    "feeToken": {
+      "address": "0x224708430f2FF85E32cd77e986eE558Eb8cC77D9",
+      "name": "Fee Token",
+      "symbol": "FEE"
+    },
+    "tradingToken1": {
+      "address": "0xB93D55595796D8c59beFC0C9045415B4d567f27c",
+      "name": "Trading Token Alpha",
+      "symbol": "TTA"
+    },
+    "tradingToken2": {
+      "address": "0x963322CC131A072F333A76ac321Bb80b6cb5375C",
+      "name": "Trading Token Beta",
+      "symbol": "TTB"
+    },
+    "faucet": {
+      "address": "0x990DB9382633723Af59B545f0bd965a2e9b34EA3",
+      "feeTokenAmount": "100.0",
+      "tradingTokenAmount": "1000.0",
+      "cooldownPeriod": 3600
+    }
+  },
+  "timestamp": "2025-08-19T22:24:00.674Z"
+}

@@ -17,14 +17,36 @@ contract TestTokenDecimals is ERC20, Ownable {
      * @param name The name of the token
      * @param symbol The symbol of the token
      * @param decimalsValue The number of decimals for the token
+     * @param initialRecipients Array of addresses to receive initial tokens
+     * @param initialAmounts Array of amounts to send to each recipient
      */
     constructor(
         string memory name,
         string memory symbol,
-        uint8 decimalsValue
+        uint8 decimalsValue,
+        address[] memory initialRecipients,
+        uint256[] memory initialAmounts
     ) ERC20(name, symbol) Ownable(msg.sender) {
-        require(decimalsValue <= 18, "TestTokenDecimals: decimals cannot exceed 18");
+        require(
+            decimalsValue <= 18,
+            "TestTokenDecimals: decimals cannot exceed 18"
+        );
         _decimals = decimalsValue;
+
+        // Mint initial supply to deployer
+        _mint(msg.sender, 1000000 * 10 ** decimals());
+
+        // Distribute tokens to initial recipients
+        require(
+            initialRecipients.length == initialAmounts.length,
+            "Recipients and amounts arrays must have same length"
+        );
+
+        for (uint256 i = 0; i < initialRecipients.length; i++) {
+            if (initialRecipients[i] != address(0) && initialAmounts[i] > 0) {
+                _transfer(msg.sender, initialRecipients[i], initialAmounts[i]);
+            }
+        }
     }
 
     /**
@@ -60,7 +82,9 @@ contract TestTokenDecimals is ERC20, Ownable {
      * @param account The address to query the balance of
      * @return The balance in the token's smallest unit
      */
-    function balanceOf(address account) public view virtual override returns (uint256) {
+    function balanceOf(
+        address account
+    ) public view virtual override returns (uint256) {
         return super.balanceOf(account);
     }
 
