@@ -9,9 +9,9 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 contract OTCSwap is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
-    uint256 public constant ORDER_EXPIRY = 7 days;
-    uint256 public constant GRACE_PERIOD = 7 days;
-    uint256 public constant MAX_RETRY_ATTEMPTS = 10;
+    uint256 public constant ORDER_EXPIRY = 1 minutes;
+    uint256 public constant GRACE_PERIOD = 1 minutes;
+    uint256 public constant MAX_RETRY_ATTEMPTS = 3;
 
     address public feeToken;
     uint256 public orderCreationFeeAmount;

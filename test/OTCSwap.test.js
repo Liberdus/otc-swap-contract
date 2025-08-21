@@ -29,9 +29,9 @@ describe('OTCSwap', function () {
 
     // Deploy test tokens
     const TestToken = await ethers.getContractFactory('TestToken')
-    tokenA = await TestToken.deploy('Token A', 'TKA')
+    tokenA = await TestToken.deploy('Token A', 'TKA', [], [])
     await tokenA.waitForDeployment()
-    tokenB = await TestToken.deploy('Token B', 'TKB')
+    tokenB = await TestToken.deploy('Token B', 'TKB', [], [])
     await tokenB.waitForDeployment()
 
     // Deploy Liberdus token mock

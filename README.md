@@ -29,22 +29,26 @@ A secure and efficient smart contract for peer-to-peer token swaps on Ethereum, 
 ## Installation
 
 1. Clone the repository:
+
 ```bash
 git clone https://github.com/yourusername/otc-swap-contract.git
 cd otc-swap-contract
 ```
 
 2. Install dependencies:
+
 ```bash
 npm install
 ```
 
 3. Compile contracts:
+
 ```bash
 npx hardhat compile
 ```
 
 4. Run tests:
+
 ```bash
 npx hardhat test
 ```
@@ -54,9 +58,10 @@ npx hardhat test
 The OTC Swap contract enables users to:
 
 1. Create swap orders specifying:
-    - Sell token and amount
-    - Buy token and amount
-    - Optional specific counterparty
+
+   - Sell token and amount
+   - Buy token and amount
+   - Optional specific counterparty
 
 2. Fill existing orders
 3. Cancel orders
@@ -93,15 +98,15 @@ function getOrder(uint256 orderId) external view returns (
 
 ```javascript
 // Create an order
-const sellAmount = ethers.parseEther('100');
-const buyAmount = ethers.parseEther('200');
+const sellAmount = ethers.parseEther("100");
+const buyAmount = ethers.parseEther("200");
 await tokenA.approve(otcSwap.address, sellAmount);
 const orderId = await otcSwap.createOrder(
-    ethers.ZeroAddress,  // Allow any counterparty
-    tokenA.address,      // Sell token
-    sellAmount,          // Sell amount
-    tokenB.address,      // Buy token
-    buyAmount           // Buy amount
+  ethers.ZeroAddress, // Allow any counterparty
+  tokenA.address, // Sell token
+  sellAmount, // Sell amount
+  tokenB.address, // Buy token
+  buyAmount // Buy amount
 );
 
 // Fill an order
@@ -119,6 +124,7 @@ The contract includes a comprehensive test suite covering:
 - Malicious token attacks
 
 Run tests with coverage:
+
 ```bash
 npx hardhat coverage
 ```
@@ -126,12 +132,14 @@ npx hardhat coverage
 ## Deployment
 
 1. Set up your environment variables:
+
 ```bash
 cp .env.example .env
 # Edit .env with your configuration
 ```
 
 2. Deploy to network:
+
 ```bash
 npx hardhat run scripts/deploy.js --network <network-name>
 ```
@@ -139,6 +147,7 @@ npx hardhat run scripts/deploy.js --network <network-name>
 ## Architecture
 
 ### Order Structure
+
 ```solidity
 struct Order {
     address maker;
@@ -153,6 +162,7 @@ struct Order {
 ```
 
 ### Events
+
 ```solidity
 event OrderCreated(
     uint256 indexed orderId,
