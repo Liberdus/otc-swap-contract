@@ -19,6 +19,7 @@ contract OTCSwap is ReentrancyGuard, Ownable {
     uint256 public firstOrderId;
     uint256 public nextOrderId;
     bool public isDisabled;
+    address public liberdusToken;
     
     mapping(address => bool) public allowedTokens;
     address[] public allowedTokensList;
@@ -135,19 +136,27 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         uint256 timestamp
     );
 
+    event LiberdusTokenUpdated(
+        address indexed oldToken,
+        address indexed newToken,
+        uint256 timestamp
+    );
+
     modifier validOrder(uint256 orderId) {
         require(orders[orderId].maker != address(0), "Order does not exist");
         require(orders[orderId].status == OrderStatus.Active, "Order is not active");
         _;
     }
 
-    constructor(address _feeToken, uint256 _feeAmount, address[] memory _allowedTokens) Ownable(msg.sender) {
+    constructor(address _feeToken, uint256 _feeAmount, address[] memory _allowedTokens, address _liberdusToken) Ownable(msg.sender) {
         require(_feeToken != address(0), "Invalid fee token");
         require(_feeAmount > 0, "Invalid fee amount");
         require(_allowedTokens.length > 0, "Must specify allowed tokens");
+        require(_liberdusToken != address(0), "Invalid Liberdus token");
         
         feeToken = _feeToken;
         orderCreationFeeAmount = _feeAmount;
+        liberdusToken = _liberdusToken;
         
         // Initialize allowed tokens
         for (uint256 i = 0; i < _allowedTokens.length; i++) {
@@ -157,6 +166,13 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         }
         
         emit FeeConfigUpdated(_feeToken, _feeAmount, block.timestamp);
+    }
+
+    function updateLiberdusToken(address _liberdusToken) external onlyOwner {
+        require(_liberdusToken != address(0), "Invalid Liberdus token");
+        address oldToken = liberdusToken;
+        liberdusToken = _liberdusToken;
+        emit LiberdusTokenUpdated(oldToken, _liberdusToken, block.timestamp);
     }
 
     function updateFeeConfig(address _feeToken, uint256 _feeAmount) external onlyOwner {
@@ -227,6 +243,10 @@ contract OTCSwap is ReentrancyGuard, Ownable {
         require(sellToken != buyToken, "Cannot swap same token");
         require(allowedTokens[sellToken], "Sell token not allowed");
         require(allowedTokens[buyToken], "Buy token not allowed");
+        require(
+            sellToken == liberdusToken || buyToken == liberdusToken,
+            "Either buy or sell token must be Liberdus token"
+        );
 
         require(
             IERC20(sellToken).balanceOf(msg.sender) >= sellAmount,

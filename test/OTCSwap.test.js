@@ -7,6 +7,7 @@ describe('OTCSwap', function () {
   let tokenA
   let tokenB
   let feeToken
+  let liberdusToken
   let owner
   let alice
   let bob
@@ -20,7 +21,7 @@ describe('OTCSwap', function () {
   // Fixed test values
   const sellAmount = ethers.parseEther('100')
   const buyAmount = ethers.parseEther('200')
-  const ORDER_FEE = ethers.parseUnits('1', 6) // $1 in USDC (6 decimals)
+  const ORDER_FEE = ethers.parseUnits('1', 18) // $1 in DAI (18 decimals)
   const generousFeeAllowance = ORDER_FEE * BigInt(1000)
 
   beforeEach(async function () {
@@ -33,14 +34,17 @@ describe('OTCSwap', function () {
     tokenB = await TestToken.deploy('Token B', 'TKB')
     await tokenB.waitForDeployment()
 
-    // Deploy fee token (USDC mock with 6 decimals)
-    const FeeToken = await ethers.getContractFactory('TestTokenDecimals')
-    feeToken = await FeeToken.deploy('USD Coin', 'USDC', 6)
+    // Deploy Liberdus token mock
+    liberdusToken = await TestToken.deploy('Liberdus', 'LBDS')
+    await liberdusToken.waitForDeployment()
+
+    // Deploy fee token (DAI mock with 18 decimals)
+    feeToken = await TestToken.deploy('DAI Stablecoin', 'DAI')
     await feeToken.waitForDeployment()
 
     // Deploy OTCSwap with fee token configuration
     const OTCSwap = await ethers.getContractFactory('OTCSwap')
-    otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE, [tokenA.target, tokenB.target, feeToken.target])
+    otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE, [tokenA.target, tokenB.target, feeToken.target, liberdusToken.target], liberdusToken.target)
     await otcSwap.waitForDeployment()
 
     // Distribute tokens
@@ -49,12 +53,15 @@ describe('OTCSwap', function () {
     await tokenA.transfer(charlie.address, INITIAL_SUPPLY / BigInt(4))
     await tokenB.transfer(alice.address, INITIAL_SUPPLY / BigInt(4))
     await tokenB.transfer(bob.address, INITIAL_SUPPLY / BigInt(4))
+    await liberdusToken.transfer(alice.address, INITIAL_SUPPLY / BigInt(4))
+    await liberdusToken.transfer(bob.address, INITIAL_SUPPLY / BigInt(4))
+    await liberdusToken.transfer(charlie.address, INITIAL_SUPPLY / BigInt(4))
     await tokenB.transfer(charlie.address, INITIAL_SUPPLY / BigInt(4))
 
-    // Distribute fee tokens
-    await feeToken.mint(alice.address, ORDER_FEE * BigInt(1000))
-    await feeToken.mint(bob.address, ORDER_FEE * BigInt(1000))
-    await feeToken.mint(charlie.address, ORDER_FEE * BigInt(1000))
+    // Distribute fee tokens (TestToken gives initial supply to deployer, so we transfer)
+    await feeToken.transfer(alice.address, ORDER_FEE * BigInt(1000))
+    await feeToken.transfer(bob.address, ORDER_FEE * BigInt(1000))
+    await feeToken.transfer(charlie.address, ORDER_FEE * BigInt(1000))
   })
 
   describe('Contract Administration', function () {
@@ -99,15 +106,16 @@ describe('OTCSwap', function () {
     beforeEach(async function () {
       // Approve tokens for order creation
       await tokenA.connect(alice).approve(otcSwap.target, sellAmount * BigInt(5))
+      await liberdusToken.connect(alice).approve(otcSwap.target, sellAmount * BigInt(5))
       await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
     })
 
     it('should create order with valid fee token payment', async function () {
       const tx = await otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS,
-        tokenA.target,
+        liberdusToken.target,
         sellAmount,
-        tokenB.target,
+        tokenA.target,
         buyAmount
       )
 
@@ -117,9 +125,9 @@ describe('OTCSwap', function () {
           0,
           alice.address,
           ZERO_ADDRESS,
-          tokenA.target,
+          liberdusToken.target,
           sellAmount,
-          tokenB.target,
+          tokenA.target,
           buyAmount,
           await time.latest(),
           feeToken.target,
@@ -135,9 +143,9 @@ describe('OTCSwap', function () {
 
       await expect(otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS,
-        tokenA.target,
+        liberdusToken.target,
         sellAmount,
-        tokenB.target,
+        tokenA.target,
         buyAmount
       )).to.be.revertedWith('Insufficient allowance for fee')
     })
@@ -149,13 +157,13 @@ describe('OTCSwap', function () {
 
       await expect(otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS,
-        tokenA.target,
+        liberdusToken.target,
         sellAmount,
-        tokenB.target,
+        tokenA.target,
         buyAmount
       )).to.be.revertedWith('Insufficient balance for fee')
     })
-  });
+  })
 
   describe('Order Filling', function () {
     const sellAmount = ethers.parseEther('100')
@@ -164,19 +172,19 @@ describe('OTCSwap', function () {
 
     beforeEach(async function () {
       // Approve tokens for alice (maker)
-      await tokenA.connect(alice).approve(otcSwap.target, sellAmount)
+      await liberdusToken.connect(alice).approve(otcSwap.target, sellAmount)
       // Approve fee token for alice
       await feeToken.connect(alice).approve(otcSwap.target, generousFeeAllowance)
 
       // Transfer and approve tokens for bob (taker)
-      await tokenB.connect(bob).approve(otcSwap.target, buyAmount)
+      await tokenA.connect(bob).approve(otcSwap.target, buyAmount)
 
       // Create an order as alice
       await otcSwap.connect(alice).createOrder(
         ZERO_ADDRESS, // public order
-        tokenA.target,
+        liberdusToken.target,
         sellAmount,
-        tokenB.target,
+        tokenA.target,
         buyAmount
       )
       orderId = 0

@@ -7,10 +7,12 @@ describe('OTCSwap - Allowed Tokens', function () {
   let tokenB
   let tokenC
   let feeToken
+  let liberdusToken
   let owner
   let alice
 
-  const ORDER_FEE = ethers.parseUnits('1', 6) // $1 in USDC (6 decimals)
+  const ORDER_FEE = ethers.parseUnits('1', 18) // $1 in DAI (18 decimals)
+  const LIBERDUS_ADDRESS = '0x693ed886545970F0a3ADf8C59af5cCdb6dDF0a76'
 
   beforeEach(async function () {
     [owner, alice] = await ethers.getSigners()
@@ -24,23 +26,27 @@ describe('OTCSwap - Allowed Tokens', function () {
     tokenC = await TestToken.deploy('Token C', 'TKC')
     await tokenC.waitForDeployment()
 
-    // Deploy fee token (USDC mock with 6 decimals)
-    const FeeToken = await ethers.getContractFactory('TestTokenDecimals')
-    feeToken = await FeeToken.deploy('USD Coin', 'USDC', 6)
+    // Deploy Liberdus token mock
+    liberdusToken = await TestToken.deploy('Liberdus', 'LBDS')
+    await liberdusToken.waitForDeployment()
+
+    // Deploy fee token (DAI mock with 18 decimals)
+    feeToken = await TestToken.deploy('DAI Stablecoin', 'DAI')
     await feeToken.waitForDeployment()
 
-    // Mint fee tokens to owner
-    await feeToken.mint(owner.address, ORDER_FEE * BigInt(100))
+    // Mint fee tokens to owner (TestToken has mint in constructor, so transfer from deployer)
+    // No need to mint separately as TestToken gives initial supply to deployer
 
-    // Deploy OTCSwap with tokenA and tokenB as allowed tokens
+    // Deploy OTCSwap with tokenA, tokenB, and Liberdus as allowed tokens
     const OTCSwap = await ethers.getContractFactory('OTCSwap')
-    otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE, [tokenA.target, tokenB.target, feeToken.target])
+    otcSwap = await OTCSwap.deploy(feeToken.target, ORDER_FEE, [tokenA.target, tokenB.target, feeToken.target, liberdusToken.target], liberdusToken.target)
     await otcSwap.waitForDeployment()
 
     // Setup tokens for Alice
     await tokenA.transfer(alice.address, ethers.parseEther('1000'))
     await tokenB.transfer(alice.address, ethers.parseEther('1000'))
     await tokenC.transfer(alice.address, ethers.parseEther('1000'))
+    await liberdusToken.transfer(alice.address, ethers.parseEther('1000'))
     await feeToken.transfer(alice.address, ORDER_FEE * BigInt(10))
   })
 
@@ -49,33 +55,74 @@ describe('OTCSwap - Allowed Tokens', function () {
       expect(await otcSwap.allowedTokens(tokenA.target)).to.be.true
       expect(await otcSwap.allowedTokens(tokenB.target)).to.be.true
       expect(await otcSwap.allowedTokens(feeToken.target)).to.be.true
+      expect(await otcSwap.allowedTokens(liberdusToken.target)).to.be.true
       expect(await otcSwap.allowedTokens(tokenC.target)).to.be.false
+    })
+
+    it('should initialize Liberdus token correctly', async function () {
+      expect(await otcSwap.liberdusToken()).to.equal(liberdusToken.target)
     })
 
     it('should initialize allowed tokens list correctly', async function () {
       const allowedTokens = await otcSwap.getAllowedTokens()
       const count = await otcSwap.getAllowedTokensCount()
       
-      expect(count).to.equal(3)
-      expect(allowedTokens.length).to.equal(3)
+      expect(count).to.equal(4)
+      expect(allowedTokens.length).to.equal(4)
       expect(allowedTokens).to.include(tokenA.target)
       expect(allowedTokens).to.include(tokenB.target)
       expect(allowedTokens).to.include(feeToken.target)
+      expect(allowedTokens).to.include(liberdusToken.target)
       expect(allowedTokens).to.not.include(tokenC.target)
     })
 
     it('should revert if no allowed tokens provided', async function () {
       const OTCSwap = await ethers.getContractFactory('OTCSwap')
       await expect(
-        OTCSwap.deploy(feeToken.target, ORDER_FEE, [])
+        OTCSwap.deploy(feeToken.target, ORDER_FEE, [], liberdusToken.target)
       ).to.be.revertedWith('Must specify allowed tokens')
     })
 
     it('should revert if invalid token address provided', async function () {
       const OTCSwap = await ethers.getContractFactory('OTCSwap')
       await expect(
-        OTCSwap.deploy(feeToken.target, ORDER_FEE, [ethers.ZeroAddress])
+        OTCSwap.deploy(feeToken.target, ORDER_FEE, [ethers.ZeroAddress], liberdusToken.target)
       ).to.be.revertedWith('Invalid token address')
+    })
+
+    it('should revert if invalid Liberdus token address provided', async function () {
+      const OTCSwap = await ethers.getContractFactory('OTCSwap')
+      await expect(
+        OTCSwap.deploy(feeToken.target, ORDER_FEE, [tokenA.target], ethers.ZeroAddress)
+      ).to.be.revertedWith('Invalid Liberdus token')
+    })
+  })
+
+  describe('Liberdus Token Management', function () {
+    it('should allow owner to update Liberdus token', async function () {
+      const oldLiberdusToken = await otcSwap.liberdusToken()
+      
+      const tx = await otcSwap.connect(owner).updateLiberdusToken(tokenC.target)
+      const receipt = await tx.wait()
+      const block = await ethers.provider.getBlock(receipt.blockNumber)
+      
+      await expect(tx)
+        .to.emit(otcSwap, 'LiberdusTokenUpdated')
+        .withArgs(oldLiberdusToken, tokenC.target, block.timestamp)
+
+      expect(await otcSwap.liberdusToken()).to.equal(tokenC.target)
+    })
+
+    it('should revert if non-owner tries to update Liberdus token', async function () {
+      await expect(
+        otcSwap.connect(alice).updateLiberdusToken(tokenC.target)
+      ).to.be.revertedWithCustomError(otcSwap, 'OwnableUnauthorizedAccount')
+    })
+
+    it('should revert if trying to set Liberdus token to zero address', async function () {
+      await expect(
+        otcSwap.connect(owner).updateLiberdusToken(ethers.ZeroAddress)
+      ).to.be.revertedWith('Invalid Liberdus token')
     })
   })
 
@@ -187,13 +234,14 @@ describe('OTCSwap - Allowed Tokens', function () {
       const allowedTokens = await otcSwap.getAllowedTokens()
       const count = await otcSwap.getAllowedTokensCount()
       
-      expect(count).to.equal(3)
-      expect(allowedTokens.length).to.equal(3)
+      expect(count).to.equal(4)
+      expect(allowedTokens.length).to.equal(4)
       
       // Check that all initial tokens are present
       expect(allowedTokens).to.include(tokenA.target)
       expect(allowedTokens).to.include(tokenB.target)
       expect(allowedTokens).to.include(feeToken.target)
+      expect(allowedTokens).to.include(liberdusToken.target)
     })
 
     it('should return updated list after adding tokens', async function () {
@@ -203,8 +251,8 @@ describe('OTCSwap - Allowed Tokens', function () {
       const allowedTokens = await otcSwap.getAllowedTokens()
       const count = await otcSwap.getAllowedTokensCount()
       
-      expect(count).to.equal(4)
-      expect(allowedTokens.length).to.equal(4)
+      expect(count).to.equal(5)
+      expect(allowedTokens.length).to.equal(5)
       expect(allowedTokens).to.include(tokenC.target)
     })
 
@@ -215,30 +263,32 @@ describe('OTCSwap - Allowed Tokens', function () {
       const allowedTokens = await otcSwap.getAllowedTokens()
       const count = await otcSwap.getAllowedTokensCount()
       
-      expect(count).to.equal(2)
-      expect(allowedTokens.length).to.equal(2)
+      expect(count).to.equal(3)
+      expect(allowedTokens.length).to.equal(3)
       expect(allowedTokens).to.not.include(tokenA.target)
       expect(allowedTokens).to.include(tokenB.target)
       expect(allowedTokens).to.include(feeToken.target)
+      expect(allowedTokens).to.include(liberdusToken.target)
     })
 
     it('should handle multiple add/remove operations correctly', async function () {
-      // Initial state: tokenA, tokenB, feeToken (3 tokens)
+      // Initial state: tokenA, tokenB, feeToken, liberdusToken (4 tokens)
       
       // Add tokenC
       await otcSwap.connect(owner).updateAllowedTokens([tokenC.target], [true])
       let count = await otcSwap.getAllowedTokensCount()
-      expect(count).to.equal(4)
+      expect(count).to.equal(5)
       
       // Remove tokenA and tokenB
       await otcSwap.connect(owner).updateAllowedTokens([tokenA.target, tokenB.target], [false, false])
       count = await otcSwap.getAllowedTokensCount()
-      expect(count).to.equal(2)
+      expect(count).to.equal(3)
       
-      // Final list should contain only feeToken and tokenC
+      // Final list should contain only feeToken, liberdusToken, and tokenC
       const finalTokens = await otcSwap.getAllowedTokens()
-      expect(finalTokens.length).to.equal(2)
+      expect(finalTokens.length).to.equal(3)
       expect(finalTokens).to.include(feeToken.target)
+      expect(finalTokens).to.include(liberdusToken.target)
       expect(finalTokens).to.include(tokenC.target)
       expect(finalTokens).to.not.include(tokenA.target)
       expect(finalTokens).to.not.include(tokenB.target)
@@ -247,8 +297,8 @@ describe('OTCSwap - Allowed Tokens', function () {
     it('should return empty list if all tokens are removed', async function () {
       // Remove all tokens
       await otcSwap.connect(owner).updateAllowedTokens(
-        [tokenA.target, tokenB.target, feeToken.target], 
-        [false, false, false]
+        [tokenA.target, tokenB.target, feeToken.target, liberdusToken.target], 
+        [false, false, false, false]
       )
       
       const allowedTokens = await otcSwap.getAllowedTokens()
@@ -287,10 +337,41 @@ describe('OTCSwap - Allowed Tokens', function () {
       await tokenA.connect(alice).approve(otcSwap.target, ethers.parseEther('100'))
       await tokenB.connect(alice).approve(otcSwap.target, ethers.parseEther('100'))
       await tokenC.connect(alice).approve(otcSwap.target, ethers.parseEther('100'))
+      await liberdusToken.connect(alice).approve(otcSwap.target, ethers.parseEther('100'))
       await feeToken.connect(alice).approve(otcSwap.target, ORDER_FEE * BigInt(10))
     })
 
-    it('should allow creating order with allowed tokens', async function () {
+    it('should allow creating order with Liberdus as sell token', async function () {
+      const sellAmount = ethers.parseEther('100')
+      const buyAmount = ethers.parseEther('200')
+
+      await expect(
+        otcSwap.connect(alice).createOrder(
+          ethers.ZeroAddress,
+          liberdusToken.target,
+          sellAmount,
+          tokenA.target,
+          buyAmount
+        )
+      ).to.emit(otcSwap, 'OrderCreated')
+    })
+
+    it('should allow creating order with Liberdus as buy token', async function () {
+      const sellAmount = ethers.parseEther('100')
+      const buyAmount = ethers.parseEther('200')
+
+      await expect(
+        otcSwap.connect(alice).createOrder(
+          ethers.ZeroAddress,
+          tokenA.target,
+          sellAmount,
+          liberdusToken.target,
+          buyAmount
+        )
+      ).to.emit(otcSwap, 'OrderCreated')
+    })
+
+    it('should reject order without Liberdus token involvement', async function () {
       const sellAmount = ethers.parseEther('100')
       const buyAmount = ethers.parseEther('200')
 
@@ -302,7 +383,7 @@ describe('OTCSwap - Allowed Tokens', function () {
           tokenB.target,
           buyAmount
         )
-      ).to.emit(otcSwap, 'OrderCreated')
+      ).to.be.revertedWith('Either buy or sell token must be Liberdus token')
     })
 
     it('should reject order with non-allowed sell token', async function () {
@@ -345,7 +426,7 @@ describe('OTCSwap - Allowed Tokens', function () {
           ethers.ZeroAddress,
           tokenC.target,
           sellAmount,
-          tokenB.target,
+          liberdusToken.target,
           buyAmount
         )
       ).to.be.revertedWith('Sell token not allowed')
@@ -360,7 +441,7 @@ describe('OTCSwap - Allowed Tokens', function () {
       // Verify tokenC is now in the allowed list
       allowedTokens = await otcSwap.getAllowedTokens()
       expect(allowedTokens).to.include(tokenC.target)
-      expect(await otcSwap.getAllowedTokensCount()).to.equal(4)
+      expect(await otcSwap.getAllowedTokensCount()).to.equal(5)
 
       // Now the order should succeed
       await expect(
@@ -368,7 +449,41 @@ describe('OTCSwap - Allowed Tokens', function () {
           ethers.ZeroAddress,
           tokenC.target,
           sellAmount,
-          tokenB.target,
+          liberdusToken.target,
+          buyAmount
+        )
+      ).to.emit(otcSwap, 'OrderCreated')
+    })
+
+    it('should enforce Liberdus requirement after updating Liberdus token', async function () {
+      const sellAmount = ethers.parseEther('100')
+      const buyAmount = ethers.parseEther('200')
+
+      // Add tokenC to allowed tokens first
+      await otcSwap.connect(owner).updateAllowedTokens([tokenC.target], [true])
+      await tokenC.connect(alice).approve(otcSwap.target, ethers.parseEther('100'))
+
+      // Change Liberdus token to tokenC
+      await otcSwap.connect(owner).updateLiberdusToken(tokenC.target)
+
+      // Now order with old Liberdus token should fail
+      await expect(
+        otcSwap.connect(alice).createOrder(
+          ethers.ZeroAddress,
+          liberdusToken.target,
+          sellAmount,
+          tokenA.target,
+          buyAmount
+        )
+      ).to.be.revertedWith('Either buy or sell token must be Liberdus token')
+
+      // But order with new Liberdus token (tokenC) should succeed
+      await expect(
+        otcSwap.connect(alice).createOrder(
+          ethers.ZeroAddress,
+          tokenC.target,
+          sellAmount,
+          tokenA.target,
           buyAmount
         )
       ).to.emit(otcSwap, 'OrderCreated')
