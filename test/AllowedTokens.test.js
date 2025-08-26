@@ -52,6 +52,18 @@ describe('OTCSwap - Allowed Tokens', function () {
       expect(await otcSwap.allowedTokens(tokenC.target)).to.be.false
     })
 
+    it('should initialize allowed tokens list correctly', async function () {
+      const allowedTokens = await otcSwap.getAllowedTokens()
+      const count = await otcSwap.getAllowedTokensCount()
+      
+      expect(count).to.equal(3)
+      expect(allowedTokens.length).to.equal(3)
+      expect(allowedTokens).to.include(tokenA.target)
+      expect(allowedTokens).to.include(tokenB.target)
+      expect(allowedTokens).to.include(feeToken.target)
+      expect(allowedTokens).to.not.include(tokenC.target)
+    })
+
     it('should revert if no allowed tokens provided', async function () {
       const OTCSwap = await ethers.getContractFactory('OTCSwap')
       await expect(
@@ -70,18 +82,51 @@ describe('OTCSwap - Allowed Tokens', function () {
   describe('updateAllowedTokens', function () {
     it('should allow owner to update allowed tokens', async function () {
       // Add tokenC to allowed tokens
-      await expect(
-        otcSwap.connect(owner).updateAllowedTokens([tokenC.target], [true])
-      ).to.emit(otcSwap, 'AllowedTokensUpdated')
-        .withArgs([tokenC.target], [true], await getLatestTimestamp())
+      const tx = await otcSwap.connect(owner).updateAllowedTokens([tokenC.target], [true])
+      const receipt = await tx.wait()
+      const block = await ethers.provider.getBlock(receipt.blockNumber)
+      
+      await expect(tx)
+        .to.emit(otcSwap, 'AllowedTokensUpdated')
+        .withArgs([tokenC.target], [true], block.timestamp)
 
       expect(await otcSwap.allowedTokens(tokenC.target)).to.be.true
+    })
+
+    it('should update allowed tokens list when adding tokens', async function () {
+      const initialCount = await otcSwap.getAllowedTokensCount()
+      const initialTokens = await otcSwap.getAllowedTokens()
+      
+      // Add tokenC to allowed tokens
+      await otcSwap.connect(owner).updateAllowedTokens([tokenC.target], [true])
+      
+      const newCount = await otcSwap.getAllowedTokensCount()
+      const newTokens = await otcSwap.getAllowedTokens()
+      
+      expect(newCount).to.equal(initialCount + BigInt(1))
+      expect(newTokens.length).to.equal(initialTokens.length + 1)
+      expect(newTokens).to.include(tokenC.target)
     })
 
     it('should allow owner to remove tokens from allowed list', async function () {
       // Remove tokenA from allowed tokens
       await otcSwap.connect(owner).updateAllowedTokens([tokenA.target], [false])
       expect(await otcSwap.allowedTokens(tokenA.target)).to.be.false
+    })
+
+    it('should update allowed tokens list when removing tokens', async function () {
+      const initialCount = await otcSwap.getAllowedTokensCount()
+      const initialTokens = await otcSwap.getAllowedTokens()
+      
+      // Remove tokenA from allowed tokens
+      await otcSwap.connect(owner).updateAllowedTokens([tokenA.target], [false])
+      
+      const newCount = await otcSwap.getAllowedTokensCount()
+      const newTokens = await otcSwap.getAllowedTokens()
+      
+      expect(newCount).to.equal(initialCount - BigInt(1))
+      expect(newTokens.length).to.equal(initialTokens.length - 1)
+      expect(newTokens).to.not.include(tokenA.target)
     })
 
     it('should allow batch updates', async function () {
@@ -93,6 +138,23 @@ describe('OTCSwap - Allowed Tokens', function () {
 
       expect(await otcSwap.allowedTokens(tokenA.target)).to.be.false
       expect(await otcSwap.allowedTokens(tokenC.target)).to.be.true
+    })
+
+    it('should handle batch updates in allowed tokens list', async function () {
+      const initialCount = await otcSwap.getAllowedTokensCount()
+      
+      // Add tokenC and remove tokenA in one call (net change: 0)
+      await otcSwap.connect(owner).updateAllowedTokens(
+        [tokenA.target, tokenC.target],
+        [false, true]
+      )
+      
+      const newCount = await otcSwap.getAllowedTokensCount()
+      const newTokens = await otcSwap.getAllowedTokens()
+      
+      expect(newCount).to.equal(initialCount) // Same count since we added 1 and removed 1
+      expect(newTokens).to.not.include(tokenA.target)
+      expect(newTokens).to.include(tokenC.target)
     })
 
     it('should revert if not called by owner', async function () {
@@ -117,6 +179,105 @@ describe('OTCSwap - Allowed Tokens', function () {
       await expect(
         otcSwap.connect(owner).updateAllowedTokens([ethers.ZeroAddress], [true])
       ).to.be.revertedWith('Invalid token address')
+    })
+  })
+
+  describe('getAllowedTokens and getAllowedTokensCount', function () {
+    it('should return correct initial allowed tokens list', async function () {
+      const allowedTokens = await otcSwap.getAllowedTokens()
+      const count = await otcSwap.getAllowedTokensCount()
+      
+      expect(count).to.equal(3)
+      expect(allowedTokens.length).to.equal(3)
+      
+      // Check that all initial tokens are present
+      expect(allowedTokens).to.include(tokenA.target)
+      expect(allowedTokens).to.include(tokenB.target)
+      expect(allowedTokens).to.include(feeToken.target)
+    })
+
+    it('should return updated list after adding tokens', async function () {
+      // Add tokenC
+      await otcSwap.connect(owner).updateAllowedTokens([tokenC.target], [true])
+      
+      const allowedTokens = await otcSwap.getAllowedTokens()
+      const count = await otcSwap.getAllowedTokensCount()
+      
+      expect(count).to.equal(4)
+      expect(allowedTokens.length).to.equal(4)
+      expect(allowedTokens).to.include(tokenC.target)
+    })
+
+    it('should return updated list after removing tokens', async function () {
+      // Remove tokenA
+      await otcSwap.connect(owner).updateAllowedTokens([tokenA.target], [false])
+      
+      const allowedTokens = await otcSwap.getAllowedTokens()
+      const count = await otcSwap.getAllowedTokensCount()
+      
+      expect(count).to.equal(2)
+      expect(allowedTokens.length).to.equal(2)
+      expect(allowedTokens).to.not.include(tokenA.target)
+      expect(allowedTokens).to.include(tokenB.target)
+      expect(allowedTokens).to.include(feeToken.target)
+    })
+
+    it('should handle multiple add/remove operations correctly', async function () {
+      // Initial state: tokenA, tokenB, feeToken (3 tokens)
+      
+      // Add tokenC
+      await otcSwap.connect(owner).updateAllowedTokens([tokenC.target], [true])
+      let count = await otcSwap.getAllowedTokensCount()
+      expect(count).to.equal(4)
+      
+      // Remove tokenA and tokenB
+      await otcSwap.connect(owner).updateAllowedTokens([tokenA.target, tokenB.target], [false, false])
+      count = await otcSwap.getAllowedTokensCount()
+      expect(count).to.equal(2)
+      
+      // Final list should contain only feeToken and tokenC
+      const finalTokens = await otcSwap.getAllowedTokens()
+      expect(finalTokens.length).to.equal(2)
+      expect(finalTokens).to.include(feeToken.target)
+      expect(finalTokens).to.include(tokenC.target)
+      expect(finalTokens).to.not.include(tokenA.target)
+      expect(finalTokens).to.not.include(tokenB.target)
+    })
+
+    it('should return empty list if all tokens are removed', async function () {
+      // Remove all tokens
+      await otcSwap.connect(owner).updateAllowedTokens(
+        [tokenA.target, tokenB.target, feeToken.target], 
+        [false, false, false]
+      )
+      
+      const allowedTokens = await otcSwap.getAllowedTokens()
+      const count = await otcSwap.getAllowedTokensCount()
+      
+      expect(count).to.equal(0)
+      expect(allowedTokens.length).to.equal(0)
+    })
+
+    it('should maintain consistency between mapping and list', async function () {
+      // Add and remove tokens in various combinations
+      await otcSwap.connect(owner).updateAllowedTokens([tokenC.target], [true])
+      await otcSwap.connect(owner).updateAllowedTokens([tokenA.target], [false])
+      
+      const allowedTokens = await otcSwap.getAllowedTokens()
+      
+      // Verify each token in the list is actually allowed in the mapping
+      for (const tokenAddress of allowedTokens) {
+        const isAllowed = await otcSwap.allowedTokens(tokenAddress)
+        expect(isAllowed).to.be.true
+      }
+      
+      // Verify tokenA is not in the list and not allowed
+      expect(allowedTokens).to.not.include(tokenA.target)
+      expect(await otcSwap.allowedTokens(tokenA.target)).to.be.false
+      
+      // Verify tokenC is in the list and allowed
+      expect(allowedTokens).to.include(tokenC.target)
+      expect(await otcSwap.allowedTokens(tokenC.target)).to.be.true
     })
   })
 
@@ -189,8 +350,17 @@ describe('OTCSwap - Allowed Tokens', function () {
         )
       ).to.be.revertedWith('Sell token not allowed')
 
+      // Verify tokenC is not in the allowed list
+      let allowedTokens = await otcSwap.getAllowedTokens()
+      expect(allowedTokens).to.not.include(tokenC.target)
+
       // Add tokenC to allowed list
       await otcSwap.connect(owner).updateAllowedTokens([tokenC.target], [true])
+
+      // Verify tokenC is now in the allowed list
+      allowedTokens = await otcSwap.getAllowedTokens()
+      expect(allowedTokens).to.include(tokenC.target)
+      expect(await otcSwap.getAllowedTokensCount()).to.equal(4)
 
       // Now the order should succeed
       await expect(
